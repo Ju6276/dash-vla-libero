@@ -23,6 +23,8 @@ H100 的 git 是 2.25.1，不能 `git worktree add --orphan`。因此只在 `g5-
 
 本机有一块 RTX 4060，但没有再装一套 LIBERO。注册表和冒烟都在 H100 上生成，再同步回本机 worktree。
 
+本机和 H100 的 `dash-vla` 都没有 `origin`。`git push -u origin g5-libero-safety` 因此失败，退出码 128，错误是 `origin` 不是一个 git 仓库。没有新建 remote，也没有改 git config。分支只留在两台机器的本地 worktree。记录注册表和冒烟的提交，本机是 `700dc77e59fde897c45ab3084adb2fe0b0e0897c`，H100 是 `8225acd1cbfdecf383ab5c1cd763696f6c895af2`。H100 这条分支前面还有空树根提交 `753fdb9`。
+
 ## 上游版本
 
 | 角色 | 仓库 | commit |

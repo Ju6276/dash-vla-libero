@@ -203,6 +203,16 @@
     "prediction_ran": false,
     "vla_coverage_gap": null
   },
+  "push": {
+    "attempted": true,
+    "command": "git push -u origin g5-libero-safety",
+    "result": "failed on both machines because origin is not configured",
+    "exit_code": 128,
+    "remote_added": false,
+    "git_config_changed": false,
+    "local_commit": "700dc77e59fde897c45ab3084adb2fe0b0e0897c",
+    "h100_commit": "8225acd1cbfdecf383ab5c1cd763696f6c895af2"
+  },
   "smoke": {
     "ran": true,
     "host": "tamsGPU6",
