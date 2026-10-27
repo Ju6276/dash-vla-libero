@@ -1,0 +1,216 @@
+{
+  "gate": "G5-L0",
+  "g5_l1": "partial",
+  "g5_a": "NOT_PASS",
+  "g5_b": "NOT_PASS",
+  "overwrote_robocasa_environment": false,
+  "note": "LIBERO-Safety 的官方约束代价来自 env.step 的 info['cost']。这里不把它叫做 Oopsie Health，也不计算 SafeSuccess。",
+  "isolation": {
+    "method": "git worktree",
+    "branch": "g5-libero-safety",
+    "local_worktree": "/home/dong/Projects/dash-vla-libero",
+    "h100_worktree": "/data/dong/Projects/dash-vla-libero",
+    "original_local_repo": "/home/dong/Projects/dash-vla",
+    "original_h100_repo": "/data/dong/Projects/dash-vla",
+    "original_branch_left_on": "master",
+    "original_master_has_commits": false,
+    "robocasa_files_left_untracked_in_original_worktree": true,
+    "h100_libero_branch_has_empty_root_commit": "753fdb9130360d66cc5c2c43b14cbdddbecff2a6",
+    "why_empty_root": "H100 git 2.25.1 没有 git worktree add --orphan。空树提交只挂在 g5-libero-safety 上，用来建立 worktree，没有把 RoboCasa 未提交文件纳入提交。本机 git 2.43.0 使用了 --orphan，第一条提交才是本报告对应的文件。"
+  },
+  "repositories": [
+    {
+      "role": "RPent checkout, read only",
+      "url": "https://github.com/RLinf/RPent.git",
+      "path": "/data/dong/Projects/dash-vla/repos/RPent",
+      "commit": "a744bd5f128ebef3cb8c6736cf7cd98adff681f1",
+      "used_for": "读取 robots/libero/robot_spec.py 的 LIBERO_SUITE_NAMES。没有改源码，也没有在这个检出上执行 pip install。"
+    },
+    {
+      "role": "RPent standard LIBERO package",
+      "url": "https://github.com/RLinf/LIBERO.git",
+      "branch": "rpent",
+      "path": "/data/dong/Projects/dash-vla-libero/third_party/LIBERO-rpent",
+      "commit": "a8323074d93a09e32bd898630a70531b1f51bc77",
+      "package_name": "rpent-libero",
+      "import_name": "libero",
+      "version": "0.2.0"
+    },
+    {
+      "role": "LIBERO-Safety",
+      "url": "https://github.com/LIBERO-SAFETY/LIBERO-Safety.git",
+      "branch": "main",
+      "path": "/data/dong/Projects/dash-vla-libero/third_party/LIBERO-Safety",
+      "commit": "19ec8df23eedfbb9265bafd3e56495fcebfcfcd0",
+      "package_name": "libero",
+      "import_name": "libero",
+      "version": "0.1.0"
+    }
+  ],
+  "environments": [
+    {
+      "name": "rpent-standard-libero",
+      "path": "/data/dong/Projects/dash-vla-libero/.venv-rpent-libero",
+      "python": "3.10.22",
+      "python_home": "/data/dong/uv-python/cpython-3.10-linux-x86_64-gnu",
+      "host": "tamsGPU6",
+      "created_by": "uv 0.13.5",
+      "freeze": "runs/g5_libero/pip_freeze_rpent_libero.txt",
+      "packages": {
+        "robosuite": "1.5.2 from PyPI, not the RoboCasa git checkout",
+        "mujoco": "3.3.0",
+        "bddl": "3.6.0",
+        "gym": "0.26.2",
+        "torch": "2.14.1+cpu",
+        "numpy": "1.26.4",
+        "imageio-ffmpeg": "0.6.0"
+      },
+      "libero_config": "/data/dong/Projects/dash-vla-libero/runs/g5_libero/libero_config_rpent",
+      "assets": "/data/dong/Projects/dash-vla-libero/third_party/LIBERO-rpent/libero/libero/assets",
+      "assets_source": "huggingface dataset RLinf/LIBERO-assets"
+    },
+    {
+      "name": "libero-safety",
+      "path": "/data/dong/Projects/dash-vla-libero/.venv-libero-safety",
+      "python": "3.10.22",
+      "python_home": "/data/dong/uv-python/cpython-3.10-linux-x86_64-gnu",
+      "host": "tamsGPU6",
+      "created_by": "uv 0.13.5",
+      "freeze": "runs/g5_libero/pip_freeze_libero_safety.txt",
+      "packages": {
+        "robosuite": "1.4.0 from the vendored third_party/robosuite-1.4",
+        "mujoco": "3.3.0",
+        "bddl": "1.0.1",
+        "gym": "0.25.2",
+        "torch": "2.14.1+cpu",
+        "numpy": "2.2.6",
+        "Wand": "0.7.2"
+      },
+      "import_method": "PYTHONPATH points at the checkout. pip install -e . wrote dist-info but `import libero` fails because the upstream tree has no libero/__init__.py. The checkout was not patched.",
+      "libero_config": "/data/dong/Projects/dash-vla-libero/runs/g5_libero/libero_config_safety",
+      "assets": "/data/dong/Projects/dash-vla-libero/third_party/LIBERO-Safety/libero/libero/assets",
+      "assets_source": "https://huggingface.co/datasets/LIBERO-Safety/libero_safety_assets assets.zip (10670353443 bytes), unzipped so that assets/ sits under libero/libero/"
+    }
+  ],
+  "not_modified": {
+    "robocasa_venv": "/data/dong/Projects/dash-vla/repos/RPent/.venv-robocasa",
+    "robocasa_robosuite_direct_url_sha256": "f67ddd11e4779abfc9b1bc454267bc22d8763dcf80368c2234c485f01fe28e50",
+    "conda_env": "/data/dong/miniforge3/envs/oopsieverse_robocasa",
+    "damage_adapter_sha256": "3dee3dda873f1aaa163b858a841fd3c322580f0c74a0a6090c6a3b887e16c621",
+    "g5_coffee_fork_sha256": "ca6b46366d08c4c6a3a6728937223f1169fbb5c202c23666c8d2455a69a7ce36",
+    "preparecoffee_report_sha256": "5adfc56433670b992964a3f147a88040b5d5776409c70f598742d08ee1b0ef56",
+    "home_libero_config": "absent after the run. One import without LIBERO_CONFIG_PATH created an empty /homeL/dong/.libero and that empty directory was removed."
+  },
+  "local_machine": {
+    "worktree": "/home/dong/Projects/dash-vla-libero",
+    "gpu": "NVIDIA GeForce RTX 4060",
+    "runtime_installed": false,
+    "why": "RPent 检出、资产和冒烟都在 H100。本机只保留同一条分支上的脚本、注册表、日志和报告，没有另装一套 libero/robosuite。"
+  },
+  "gpu_egl": {
+    "host": "tamsGPU6",
+    "driver": "615.78.08",
+    "gpus": [
+      "0 NVIDIA H100 NVL",
+      "1 NVIDIA H100 PCIe",
+      "2 NVIDIA H100 PCIe"
+    ],
+    "smoke_device": "CUDA_VISIBLE_DEVICES=2, MUJOCO_EGL_DEVICE_ID=2",
+    "MUJOCO_GL": "egl",
+    "PYOPENGL_PLATFORM": "egl",
+    "egl_libraries_present": [
+      "libEGL_nvidia.so.0",
+      "libEGL.so.1"
+    ]
+  },
+  "rpent_registry": {
+    "file": "runs/g5_libero/registry_rpent.json",
+    "allowlist_count": 17,
+    "registered_allowlist_suites": [
+      "libero_spatial",
+      "libero_object",
+      "libero_goal",
+      "libero_90",
+      "libero_10"
+    ],
+    "registered_task_rows": 130,
+    "unregistered_allowlist_names": [
+      "libero_object_task",
+      "libero_object_swap",
+      "libero_object_lan",
+      "libero_goal_task",
+      "libero_goal_swap",
+      "libero_goal_lan",
+      "libero_spatial_task",
+      "libero_spatial_swap",
+      "libero_spatial_lan",
+      "libero_10_task",
+      "libero_10_swap",
+      "libero_10_lan"
+    ],
+    "registered_outside_allowlist": ["libero_100"],
+    "safety_suites_present": [],
+    "missing_bddl": 0,
+    "missing_init_states": 0
+  },
+  "safety_registry": {
+    "file": "runs/g5_libero/registry_safety.json",
+    "authority": [
+      "vla_safety_task_map.py",
+      "get_benchmark()"
+    ],
+    "level_task_rows": 75,
+    "unique_task_names": 35,
+    "per_suite_level_tasks": {
+      "affordance": 15,
+      "human_safety": 15,
+      "obstacle_avoidance": 15,
+      "obstacle_avoidance_human": 15,
+      "reasoning_safety": 15
+    },
+    "per_suite_unique_names": {
+      "affordance": 5,
+      "human_safety": 10,
+      "obstacle_avoidance": 5,
+      "obstacle_avoidance_human": 5,
+      "reasoning_safety": 15
+    },
+    "names_shared_by_obstacle_avoidance_and_obstacle_avoidance_human": 5,
+    "registry_rows_aligned_with_task_map": true,
+    "files_complete": false,
+    "missing_init_states": 15,
+    "missing_init_suite": "reasoning_safety",
+    "missing_bddl": 1,
+    "missing_bddl_detail": "get_benchmark 给出的 reasoning_safety L2 level-local id 1 路径以 place_the_knife_on_the_cabinet_with_the_handle_hanging_off_the_edge_so_it_is_easy_for_me_to_grab.bddl 结尾。同目录实际文件名少了后缀 so_it_is_easy_for_me_to_grab。注册表没有改写成那个较短文件。"
+  },
+  "unresolved_dependencies": [
+    "RPent allowlist 里的 12 个 *_task/_swap/_lan 名字在标准 rpent-libero 的 get_benchmark() 中未注册。没有安装 liberopro，避免和标准包抢同一个 libero 导入名。",
+    "LIBERO-Safety 的 pip install -e . 不能直接 import。运行时用 PYTHONPATH 指向检出。上游没有补 libero/__init__.py。",
+    "LIBERO-Safety requirements.txt 里的训练栈没有安装：wandb==0.13.1、transformers==4.21.1、robomimic==0.2.0、hydra-core==1.2.0、thop、einops。冒烟不需要它们。",
+    "opencv 使用了当前可装的 opencv-python / opencv-python-headless 5.0.0.93，没有锁 requirements.txt 里的 4.6.0.66。",
+    "安全环境里 gym==0.25.2 配 numpy==2.2.6 会打印 Gym 不支持 NumPy 2 的警告。这一条冒烟仍然完成了 reset 和 step。",
+    "没有安装 openpi / sam3，也没有下载 π0.5 权重。",
+    "reasoning_safety 的 15 个初始状态文件不在 commit 19ec8df 的树里。",
+    "本机没有安装 LIBERO 运行时。"
+  ],
+  "model": {
+    "frozen_pi05_present": false,
+    "searched": [
+      "/data/dong/Projects/dash-vla/repos/RPent/checkpoints",
+      "/data/dong/hf-cache/hub"
+    ],
+    "found_instead": "repos/RPent/checkpoints/rldx-1-ft-rc365 is the RoboCasa RLDX checkpoint, not a LIBERO π0.5 checkpoint",
+    "prediction_ran": false,
+    "vla_coverage_gap": null
+  },
+  "smoke": {
+    "ran": true,
+    "host": "tamsGPU6",
+    "episodes": 2,
+    "not_a_75_scenario_rollout": true,
+    "harness_used": false,
+    "envserver_modified": false,
+    "standard_libero": "runs/g5_libero/smoke_rpent_libero.json",
+    "libero_safety": "runs/g5_libero/smoke_libero_safety.json"
+  }
+}

@@ -1,0 +1,10 @@
+third_party/
+.venv-rpent-libero/
+.venv-libero-safety/
+runs/g5_libero/downloads/
+runs/g5_libero/hf_home/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.zip
+*.hdf5
