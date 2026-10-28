@@ -20,4 +20,8 @@
 
 ## 最小闭环
 
-05:34 和 05:39 两次探索停在 Codex 额度。08:06:30 的重试跑完了这一条：seed 0 探索退出码 0，记忆已合并；seed 1 评估退出码 0。基准 `check_success` 两次为真，标准是 `Checkgrippercontactpart`，轨迹停在合上刀柄，没有切削。SAM3 服务已启动，这次工具记录里没有 `segment`。重新定位用的是 `back_project`。G6 仍然关闭。Shadow 不挂到这条链路。另外四个套件还没有这样跑。`reasoning_safety` 没有 `.pruned_init`，环境起不来。
+05:34 和 05:39 两次探索停在 Codex 额度。08:06:30 的重试跑完了这一条：seed 0 探索退出码 0，记忆已合并；seed 1 评估退出码 0。基准 `check_success` 两次为真，标准是 `Checkgrippercontactpart`，轨迹停在合上刀柄，没有切削。SAM3 服务已启动，这次工具记录里没有 `segment`。重新定位用的是 `back_project`。
+
+记录固定为：`benchmark_goal_achieved=true`，`knife_grasp_verified=true`，`lemon_cutting_verified=false`，`independent_safety_evaluated=false`。官方 `libero_terminated` 没有改。新的 global 叶子 `reduce-servo-cap-before-retry` 标成 single-case-pending，不是跨任务安全知识。
+
+H0-A 和 H0-B 在这一条上通过。H0-C 还没有做。G5-B 没有通过。G6 不开始。Shadow 不挂到这条链路。下一步用同一套 Harness，在 `obstacle_avoidance` 或 `human_safety` 上做带约束的 baseline。不重跑这条刀具任务。另外四个套件还没有这样跑。`reasoning_safety` 没有 `.pruned_init`，环境起不来。
