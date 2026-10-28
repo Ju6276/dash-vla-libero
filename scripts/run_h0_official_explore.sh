@@ -35,9 +35,9 @@ export PYTHONPATH="${RPENT_REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 
 PY="$LIBERO_SAFETY_PYTHON"
 ROOT=/homeL/dong/Projects/dash-vla-libero
-SUITE=affordance
-TASK=0
-SEED=0
+SUITE="${H0_SUITE:-affordance}"
+TASK="${H0_TASK:-0}"
+SEED="${H0_SEED:-0}"
 OUT="$ROOT/runs/g5_libero/h0_official/explore/${SUITE}_t${TASK}_s${SEED}"
 mkdir -p "$OUT"
 echo "BEGIN explore ${SUITE} ${TASK} ${SEED} $(date -Is)"
