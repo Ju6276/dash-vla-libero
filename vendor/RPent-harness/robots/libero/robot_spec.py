@@ -349,13 +349,15 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
                 f"local memory corpus not found at {memory_dir}; "
                 "run exploration first or use --memory-profile hf"
             )
+    from robots.libero.safelibero_env import SAFELIBERO_SUITES, safelibero_task_identity
     from robots.libero.safety_env import SAFETY_SUITES, safety_task_identity
 
-    identity = (
-        safety_task_identity(args.suite, args.task)
-        if args.suite in SAFETY_SUITES
-        else None
-    )
+    if args.suite in SAFELIBERO_SUITES:
+        identity = safelibero_task_identity(args.suite, args.task)
+    elif args.suite in SAFETY_SUITES:
+        identity = safety_task_identity(args.suite, args.task)
+    else:
+        identity = None
     prompt_vars = {
         "suite": args.suite,
         "task": args.task,
@@ -371,6 +373,14 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
         "session_number": 1,
         "session_max": max(1, args.explore_sessions) if explore else 1,
         "safety_suite": "1" if identity else "0",
+        "safety_benchmark": (
+            "safelibero"
+            if args.suite in SAFELIBERO_SUITES
+            else ("libero_safety" if identity else "")
+        ),
+        # Optional natural-language safety requirement; the same sentence goes
+        # to every compared harness. Empty means the original task only.
+        "safety_requirement": os.environ.get("RPENT_SAFETY_REQUIREMENT", ""),
         "safety_level": "" if identity is None else str(identity["level"]),
         "safety_level_id": "" if identity is None else str(identity["level_id"]),
         "safety_task_name": "" if identity is None else str(identity["task_name"]),
@@ -409,9 +419,10 @@ def _cuda_args(args: argparse.Namespace) -> list[str]:
 
 def _server_python(args: argparse.Namespace, kind: str) -> str:
     """Safety simulation and Pi0.5 cannot share one interpreter."""
+    from robots.libero.safelibero_env import SAFELIBERO_SUITES
     from robots.libero.safety_env import SAFETY_SUITES
 
-    if kind == "env" and getattr(args, "suite", None) in SAFETY_SUITES:
+    if kind == "env" and getattr(args, "suite", None) in (*SAFETY_SUITES, *SAFELIBERO_SUITES):
         return os.environ.get("LIBERO_SAFETY_PYTHON", sys.executable)
     if kind == "vla" and os.environ.get("PI05_PYTHON"):
         return os.environ["PI05_PYTHON"]
@@ -427,11 +438,13 @@ def _spawn_env_server(
     if args.env_endpoint is not None:
         return None, make_rpc_client(args.env_endpoint)
 
+    from robots.libero.safelibero_env import SAFELIBERO_SUITES
     from robots.libero.safety_env import SAFETY_SUITES
     from rpent.utils.config import get_libero_type
 
     host, port = "127.0.0.1", pick_free_port()
-    safety = args.suite in SAFETY_SUITES
+    safelibero = args.suite in SAFELIBERO_SUITES
+    safety = args.suite in SAFETY_SUITES or safelibero
     env_overrides = {
         "LIBERO_TYPE": args.libero_type or get_libero_type(),
         "MUJOCO_GL": "egl",
@@ -440,15 +453,22 @@ def _spawn_env_server(
     }
     cuda_args: list[str] = []
     if safety:
-        root = os.environ["LIBERO_SAFETY_ROOT"]
-        robosuite = os.environ.get(
-            "LIBERO_ROBOSUITE_ROOT",
-            str(Path(root) / "third_party" / "robosuite-1.4"),
-        )
+        # SafeLIBERO ships its own ``libero`` package and needs stock robosuite
+        # 1.4.1: the LIBERO-Safety checkout changes the OSC output scale.
+        root = os.environ["SAFELIBERO_ROOT" if safelibero else "LIBERO_SAFETY_ROOT"]
+        if safelibero:
+            robosuite = os.environ["SAFELIBERO_ROBOSUITE_ROOT"]
+        else:
+            robosuite = os.environ.get(
+                "LIBERO_ROBOSUITE_ROOT",
+                str(Path(os.environ["LIBERO_SAFETY_ROOT"]) / "third_party" / "robosuite-1.4"),
+            )
         env_overrides["PYTHONPATH"] = os.pathsep.join(
             [str(get_repo_root()), root, robosuite]
         )
-        env_overrides["LIBERO_CONFIG_PATH"] = os.environ["LIBERO_CONFIG_PATH"]
+        env_overrides["LIBERO_CONFIG_PATH"] = os.environ[
+            "SAFELIBERO_CONFIG_PATH" if safelibero else "LIBERO_CONFIG_PATH"
+        ]
         env_overrides["RPENT_SAFETY_TRACE_PATH"] = str(
             output_dir / "_auditor" / "safety_trace.json"
         )

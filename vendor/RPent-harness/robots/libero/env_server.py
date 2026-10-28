@@ -112,8 +112,16 @@ def make_env(
     Safety suites stay in this process. Their benchmark calls take a level,
     so they do not go through rlinf's flat ``LiberoEnv``.
     """
+    from robots.libero.safelibero_env import SAFELIBERO_SUITES, SafeLiberoRpcEnv
     from robots.libero.safety_env import SAFETY_SUITES, SafetyRpcEnv
 
+    if suite_name in SAFELIBERO_SUITES:
+        return SafeLiberoRpcEnv(
+            suite_name,
+            task_id,
+            seed,
+            max_episode_steps,
+        )
     if suite_name in SAFETY_SUITES:
         return SafetyRpcEnv(
             suite_name,
