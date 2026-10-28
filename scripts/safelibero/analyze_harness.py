@@ -33,14 +33,18 @@ RELEASE_TOOLS = {"release"}
 CHUNK = 5  # RPent LIBERO preset: executed actions per VLA call
 
 
-def _tool_log(item: dict) -> dict:
-    """The primitive's own result dict (``log.result``), or {} for non-motion tools."""
+def _tool_payload(item: dict) -> dict:
+    """The env-facing tool's response (state, log, ...), or {} for other tools."""
     try:
         outer = json.loads(item["result"]["content"][0]["text"])
-        inner = json.loads(outer["content"][0]["text"])
-        return inner.get("log", {}).get("result") or {}
+        return json.loads(outer["content"][0]["text"])
     except (KeyError, IndexError, TypeError, json.JSONDecodeError):
         return {}
+
+
+def _tool_log(item: dict) -> dict:
+    """The primitive's own result dict (``log.result``), or {} for non-motion tools."""
+    return (_tool_payload(item).get("log") or {}).get("result") or {}
 
 
 def _steps_used(tool: str, args: dict, log: dict) -> int:
@@ -77,12 +81,20 @@ def tool_calls(run: Path) -> list[dict]:
             continue
         tool = item.get("tool")
         args = item.get("arguments") or {}
-        log = _tool_log(item)
+        payload = _tool_payload(item)
+        log = (payload.get("log") or {}).get("result") or {}
         if tool == "reset":
             step = 0
         step += _steps_used(tool, args, log)
         calls.append(
-            {"tool": tool, "args": args, "step": step, "failed": log.get("success") is False}
+            {
+                "tool": tool,
+                "args": args,
+                "step": step,
+                "failed": log.get("success") is False,
+                # End-effector position after the call; None for non-env tools.
+                "eef": (payload.get("state") or {}).get("robot0_eef_pos"),
+            }
         )
     return calls
 
@@ -92,7 +104,7 @@ def label_phases(calls: list[dict]) -> list[dict]:
     segments = []
     previous = 0
     holding = released = grasp_failed = tried_grasp = False
-    for call in calls:
+    for index, call in enumerate(calls):
         tool, args = call["tool"], call["args"]
         if tool == "reset":
             previous = 0
@@ -105,7 +117,7 @@ def label_phases(calls: list[dict]) -> list[dict]:
             continue
         if tool in VLA_TOOLS:
             phase = "vla"
-        elif tool in RELEASE_TOOLS or (tool == "set_gripper" and float(args.get("value", 1)) < 0):
+        elif tool in RELEASE_TOOLS or (tool == "set_gripper" and float(args.get("gripper", 1)) < 0):
             phase = "release"
         elif tool == "set_gripper":
             phase = "held_motion"
@@ -117,7 +129,9 @@ def label_phases(calls: list[dict]) -> list[dict]:
             phase = "recovery"
         else:
             phase = "approach"
-        segments.append({"tool": tool, "phase": phase, "start": previous, "end": call["step"]})
+        segments.append(
+            {"tool": tool, "phase": phase, "start": previous, "end": call["step"], "index": index}
+        )
         previous = call["step"]
         if tool in VLA_TOOLS:
             tried_grasp = True
@@ -240,6 +254,16 @@ def main() -> None:
     explore = [r for r in rows if r["mode"] == "explore"]
     summary["memory_merged_unsafe_success"] = rate(
         explore, lambda r: r["success"] and r["collided"]
+    )
+    # Memory propagation: eval collisions on scenes whose explore merged an unsafe success.
+    scene = lambda r: r["run"].rsplit("_s", 1)[0]  # noqa: E731
+    unsafe = {scene(r) for r in explore if r["success"] and r["collided"]}
+    evals = [r for r in rows if r["mode"] == "eval"]
+    summary["eval_collided_after_unsafe_memory"] = rate(
+        [r for r in evals if scene(r) in unsafe], lambda r: r["collided"]
+    )
+    summary["eval_collided_after_clean_memory"] = rate(
+        [r for r in evals if scene(r) not in unsafe], lambda r: r["collided"]
     )
     summary["explore_attempts_collided"] = (
         f"{sum(r['attempts_collided'] for r in explore)}/{sum(r['attempts'] for r in explore)}"
