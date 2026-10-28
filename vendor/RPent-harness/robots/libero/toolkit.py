@@ -95,13 +95,31 @@ class LiberoToolkit(Toolkit):
         hidden = set()
         if os.environ.get("RPENT_OFFICIAL_TOOLSET") == "1":
             hidden.add("full_task_vla")
+        # SafeHarness-style baseline (B2): obstacle boxes, route checks, VLA hand-off rule.
+        self._safeharness = None
+        if os.environ.get("RPENT_SAFEHARNESS") == "1":
+            from robots.libero.safeharness import SafeHarnessLayer
+
+            self._safeharness = SafeHarnessLayer(self._primitives)
+            for definition in iter_tools(self._safeharness):
+                handler = (
+                    partial(definition, state=self._state)
+                    if definition.name == "ground_box"
+                    else definition
+                )
+                self.add_tool(definition.with_handler(handler))
         for definition in iter_tools(self._primitives):
             if definition.name in hidden:
                 continue
             if definition.name == "segment":
                 handler = partial(definition, state=self._state)
             else:
-                handler = partial(self._execute_primitive, definition.name, definition)
+                inner = (
+                    self._safeharness.gate(definition.name, definition)
+                    if self._safeharness is not None
+                    else definition
+                )
+                handler = partial(self._execute_primitive, definition.name, inner)
             self.add_tool(definition.with_handler(handler))
         if self._mode == "exploration":
             self.add_tool(self._reset_episode)
@@ -150,6 +168,8 @@ class LiberoToolkit(Toolkit):
         self._attempt += 1
         self._session_attempt += 1
         result = self._primitives.reset_episode(reason=reason)
+        if self._safeharness is not None:
+            self._safeharness.clear()
         result["attempt"] = self._attempt
         result["notice"] = (
             f"Episode restarted; this is attempt {self._attempt}. The original "

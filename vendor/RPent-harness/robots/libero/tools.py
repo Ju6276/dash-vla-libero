@@ -81,6 +81,8 @@ class LiberoPrimitives:
         self._frames = []
         self._flywheel_config = flywheel_config
         self._flywheel = None
+        # Optional per-step callback (SafeHarness-style execution monitor).
+        self._step_monitor: Callable[[], None] | None = None
 
     def start_recording(self):
         self._recording = True
@@ -142,6 +144,8 @@ class LiberoPrimitives:
         self.set_obs(obs)
         if self._recording:
             self.record_frame(obs)
+        if self._step_monitor is not None:
+            self._step_monitor()
 
     def execute_action(self, values: list[float]) -> ToolResult:
         """Execute one native action and refresh observations and recording."""

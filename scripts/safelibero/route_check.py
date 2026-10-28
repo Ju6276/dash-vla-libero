@@ -2,27 +2,28 @@
 """Offline estimate: which original-Harness collisions a SafeHarness-style check covers.
 
 SafeHarness (arXiv 2609.20822) grounds objects as boxes, verifies every
-analytic waypoint route against the obstacle box with a clearance margin
-(the gripper and any held object), and invokes the frozen VLA only once the
-gripper is within 3 cm of the target. We have no code for it, so this replays
-that rule on the recorded B0 trajectories:
+analytic waypoint route against the obstacle box (a segment collides if the
+gripper or held object passes within 12 cm of the obstacle or less than 5 cm
+above it), and invokes the frozen VLA only once the gripper is within 3 cm of
+the target. We have no code for it; this replays the same check the online B2
+arm uses (robots/libero/safeharness.py) on the recorded trajectories, with
+simulator boxes instead of SAM 3 boxes:
 
-  analytic motion   covered if the straight start->end sweep of the gripper
-                    box (plus held object) enters the obstacle box + clearance
+  analytic motion   covered if the straight start->end segment fails the check
   VLA call          not covered if the VLA started within 3 cm (horizontal) of
                     where it ended, i.e. SafeHarness would also have run it
                     there; otherwise "plausible": SafeHarness would have done
-                    that travel analytically, and covered it if the sweep
-                    is flagged
-  release           covered if the release pose is inside the inflated box
+                    that travel analytically
+  release           covered if the release pose itself fails the check
 
-The same check on segments that did not collide gives the false-alarm rate,
-i.e. how often the rule would have refused or rerouted a harmless motion.
+The same check on segments that did not collide gives the share of harmless
+B0 motions SafeHarness would have refused or rerouted.
 
-Approximations: straight-line sweeps (move_to servos toward the target, so
-close for analytic motion, crude for VLA); a fixed gripper box; the held
-object is the non-obstacle object nearest the gripper when it closed; boxes
-come from the initial scene (scene_geometry.py).
+Approximations: straight-line segments (move_to servos toward the target, so
+close for analytic motion, crude for VLA); the held object is the
+non-obstacle object nearest the gripper when it closed; every non-obstacle
+object counts as a possible contact target; boxes come from the initial scene
+(scene_geometry.py).
 
 Usage: route_check.py RUN_ROOT --geometry geometry.json [--out route_check.json]
 """
@@ -39,41 +40,29 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from analyze_harness import MOTION_TOOLS, RELEASE_TOOLS, VLA_TOOLS, label_phases, tool_calls  # noqa: E402
-
-CLEARANCES = (0.0, 0.05, 0.12)  # SafeHarness margins are 5 cm and 12 cm
-VLA_HANDOFF = 0.03  # SafeHarness calls the VLA only within 3 cm of the target
-# Gripper box around the EEF site: fingers and hand, any yaw.
-GRIPPER_HALF_XY = 0.05
-GRIPPER_BELOW = 0.02
-GRIPPER_ABOVE = 0.08
+from robots.libero.safeharness import VLA_HANDOFF, SafeHarnessLayer  # noqa: E402
 
 
-def sweep_hits(p0, p1, box: dict, held: dict | None, clearance: float) -> bool:
-    """Does the gripper box (plus held object) swept from p0 to p1 enter box + clearance?"""
-    below = GRIPPER_BELOW
-    half = GRIPPER_HALF_XY
-    if held:
-        size = np.asarray(held["max"]) - np.asarray(held["min"])
-        below += float(size[2])
-        half = max(half, float(max(size[:2])) / 2)
-    lo = np.asarray(box["min"]) - np.array([half, half, GRIPPER_ABOVE]) - clearance
-    hi = np.asarray(box["max"]) + np.array([half, half, below]) + clearance
-    p0, p1 = np.asarray(p0, float), np.asarray(p1, float)
-    d = p1 - p0
-    t0, t1 = 0.0, 1.0
-    for axis in range(3):
-        if abs(d[axis]) < 1e-9:
-            if not lo[axis] <= p0[axis] <= hi[axis]:
-                return False
-            continue
-        a, b = (lo[axis] - p0[axis]) / d[axis], (hi[axis] - p0[axis]) / d[axis]
-        t0, t1 = max(t0, min(a, b)), min(t1, max(a, b))
-        if t0 > t1:
-            return False
-    return True
+class _NoPrimitives:
+    _step_monitor = None
 
 
-def nearest_object(eef, objects: dict, obstacle: str) -> dict | None:
+def scene_layer(cell_geometry: dict) -> SafeHarnessLayer:
+    """The B2 check with simulator boxes: the obstacle, and every other object as a target."""
+    layer = SafeHarnessLayer(_NoPrimitives())
+    for name, box in cell_geometry["objects"].items():
+        if box:
+            role = "obstacle" if name == cell_geometry["obstacle"] else "target"
+            layer.boxes[name] = {"label": name, "role": role, **box}
+    return layer
+
+
+def fails(layer: SafeHarnessLayer, start, end, held: str | None) -> bool:
+    layer.held = held
+    return not layer.check_segment(start, end)["ok"]
+
+
+def nearest_object(eef, objects: dict, obstacle: str) -> str | None:
     best, best_d = None, 0.08
     for name, box in objects.items():
         if name == obstacle or not box:
@@ -81,7 +70,7 @@ def nearest_object(eef, objects: dict, obstacle: str) -> dict | None:
         center = (np.asarray(box["min"]) + np.asarray(box["max"])) / 2
         dist = float(np.linalg.norm(center[:2] - np.asarray(eef[:2])))
         if dist < best_d:
-            best, best_d = box, dist
+            best, best_d = name, dist
     return best
 
 
@@ -119,17 +108,15 @@ def episodes(run: Path, cell_geometry: dict) -> list[list[dict]]:
     return result
 
 
-def verdict(segment: dict, box: dict, clearance: float) -> str:
+def verdict(segment: dict, layer: SafeHarnessLayer) -> str:
     tool = segment["tool"]
     start, end, held = segment["eef_start"], segment["eef_end"], segment["held"]
     if tool in VLA_TOOLS:
         travel = float(np.linalg.norm(np.asarray(end[:2]) - np.asarray(start[:2])))
-        if travel <= VLA_HANDOFF:
-            return "not_covered"
-        return "plausible" if sweep_hits(start, end, box, held, clearance) else "not_covered"
+        return "not_covered" if travel <= VLA_HANDOFF else "plausible"
     if tool in RELEASE_TOOLS or segment["phase"] == "release":
-        return "covered" if sweep_hits(end, end, box, None, clearance) else "not_covered"
-    return "covered" if sweep_hits(start, end, box, held, clearance) else "not_covered"
+        return "covered" if fails(layer, end, end, None) else "not_covered"
+    return "covered" if fails(layer, start, end, held) else "not_covered"
 
 
 def main() -> None:
@@ -139,7 +126,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
     geometry = json.loads(args.geometry.read_text())
-    collisions, alarms = [], {c: Counter() for c in CLEARANCES}
+    collisions, alarms = [], Counter()
     for run in sorted(args.root.glob("*/*")):
         trace_path = run / "_auditor" / "safety_trace.json"
         if not trace_path.is_file():
@@ -159,56 +146,48 @@ def main() -> None:
         found = episodes(run, geometry[cell])
         if len(found) != len(attempts):
             print(f"warn {run.name}: {len(found)} episodes in stream, {len(attempts)} attempts")
-        box = geometry[cell]["objects"][geometry[cell]["obstacle"]]
+        layer = scene_layer(geometry[cell])
         # Align from the end: the final episode is always the logged final attempt.
         for attempt_no, (episode, attempt) in enumerate(
             zip(found[::-1], attempts[::-1]), start=1
         ):
             step = attempt["collide_step"]
             for segment in episode:
-                hit = step is not None and segment["start"] < step <= segment["end"]
-                after = step is not None and segment["start"] >= step
-                if after:
+                if step is not None and segment["start"] >= step:
                     continue
-                for clearance in CLEARANCES:
-                    if hit:
-                        continue
-                    analytic = segment["tool"] in MOTION_TOOLS
-                    if analytic:
-                        alarms[clearance]["analytic"] += 1
-                        if sweep_hits(segment["eef_start"], segment["eef_end"], box, segment["held"], clearance):
-                            alarms[clearance]["analytic_flagged"] += 1
-                if hit:
-                    collisions.append(
-                        {
-                            "run": f"{run.parent.name}/{run.name}",
-                            "attempt_from_end": attempt_no,
-                            "success": bool(attempt["check_success"]),
-                            "displacement_m": round(attempt["max_displacement_m"], 4),
-                            "collide_step": step,
-                            "tool": segment["tool"],
-                            "phase": segment["phase"],
-                            "held": segment["held"] is not None,
-                            "vla_travel_m": round(
-                                float(np.linalg.norm(np.asarray(segment["eef_end"][:2]) - np.asarray(segment["eef_start"][:2]))), 3
-                            ),
-                            **{f"c{int(c * 100)}": verdict(segment, box, c) for c in CLEARANCES},
-                        }
-                    )
+                if step is None or not segment["start"] < step <= segment["end"]:
+                    if segment["tool"] in MOTION_TOOLS:
+                        alarms["analytic"] += 1
+                        alarms["analytic_flagged"] += fails(
+                            layer, segment["eef_start"], segment["eef_end"], segment["held"]
+                        )
+                    continue
+                travel = np.asarray(segment["eef_end"][:2]) - np.asarray(segment["eef_start"][:2])
+                collisions.append(
+                    {
+                        "run": f"{run.parent.name}/{run.name}",
+                        "attempt_from_end": attempt_no,
+                        "success": bool(attempt["check_success"]),
+                        "displacement_m": round(attempt["max_displacement_m"], 4),
+                        "collide_step": step,
+                        "tool": segment["tool"],
+                        "phase": segment["phase"],
+                        "held": segment["held"],
+                        "travel_xy_m": round(float(np.linalg.norm(travel)), 3),
+                        "verdict": verdict(segment, layer),
+                    }
+                )
     for row in collisions:
         print(
             f"{row['run']:45s} a-{row['attempt_from_end']} {'S' if row['success'] else '-'} "
             f"disp={row['displacement_m']:.3f} {row['tool']}/{row['phase']} held={row['held']} "
-            f"travel={row['vla_travel_m']} " + " ".join(f"c{int(c*100)}={row[f'c{int(c*100)}']}" for c in CLEARANCES)
+            f"travel={row['travel_xy_m']} {row['verdict']}"
         )
     summary = {
-        f"c{int(c * 100)}": {
-            "collisions": dict(Counter(row[f"c{int(c * 100)}"] for row in collisions)),
-            "false_alarm_analytic": f"{alarms[c]['analytic_flagged']}/{alarms[c]['analytic']}",
-        }
-        for c in CLEARANCES
+        "n_collisions": len(collisions),
+        "collisions": dict(Counter(row["verdict"] for row in collisions)),
+        "harmless_analytic_refused": f"{alarms['analytic_flagged']}/{alarms['analytic']}",
     }
-    summary["n_collisions"] = len(collisions)
     print(json.dumps(summary, indent=2))
     if args.out:
         args.out.write_text(json.dumps({"summary": summary, "collisions": collisions}, indent=2))
