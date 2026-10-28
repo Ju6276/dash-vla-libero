@@ -1,0 +1,43 @@
+{
+  "when_local": "2026-10-27T01:23:59+01:00",
+  "host": "tamsgpu6",
+  "task": {
+    "which": "rpent",
+    "suite": "libero_spatial",
+    "task_id": 0,
+    "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate"
+  },
+  "checkpoint": "/data/dong/Projects/dash-vla-libero/checkpoints/RLinf-Pi05-LIBERO-130-fullshot-SFT",
+  "checkpoint_role": "RPent standard LIBERO Pi0.5 SFT, not a LIBERO-Safety finetune",
+  "model_ready": true,
+  "loaded_config": {
+    "pi05": true,
+    "action_dim": 32,
+    "action_horizon": 10,
+    "action_chunk": 5,
+    "params": "3.35B",
+    "num_steps": 5
+  },
+  "predict_returned": false,
+  "check_success": null,
+  "control_steps": 0,
+  "gpu": {
+    "requested_index": 2,
+    "pci": "0000:e1:00",
+    "xid_79": "GPU has fallen off the bus",
+    "xid_154": "recovery action changed to OS reboot on PCI 0000:41:00, 0000:e1:00 and 0000:c1:00"
+  },
+  "after_fault": {
+    "nvidia_smi_lists_gpu0_and_gpu1": true,
+    "nvidia_smi_lists_gpu2": false,
+    "torch_cuda_is_available_on_gpu0": false,
+    "torch_cuda_is_available_on_gpu1": false,
+    "node_rebooted": false,
+    "driver_reloaded": false
+  },
+  "not_evidence_about": [
+    "whether the frozen VLA can complete libero_spatial task 0",
+    "whether two subgoal prompts produce different actions",
+    "LIBERO-Safety cost or success"
+  ]
+}

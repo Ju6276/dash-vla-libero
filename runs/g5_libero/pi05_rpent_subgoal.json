@@ -1,0 +1,30 @@
+{
+  "checkpoint": "/homeL/dong/Projects/dash-vla-libero/checkpoints/RLinf-Pi05-LIBERO-130-fullshot-SFT",
+  "checkpoint_role": "RPent standard LIBERO Pi0.5 SFT, not a LIBERO-Safety finetune",
+  "task": {
+    "which": "rpent",
+    "suite": "libero_spatial",
+    "task_id": 0,
+    "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate",
+    "bddl_path": "/homeL/dong/Projects/dash-vla-libero/third_party/LIBERO-rpent/libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl"
+  },
+  "official_prompt": "pick up the black bowl between the plate and the ramekin and place it on the plate",
+  "alternate_prompt": "lift the robot arm upward without touching any object",
+  "shared_noise_shape": [
+    1,
+    10,
+    32
+  ],
+  "official_repeat_max_abs_diff": 0.0,
+  "cross_prompt_max_abs_diff": 0.24078604578971863,
+  "official_action_shape": [
+    5,
+    7
+  ],
+  "alternate_action_shape": [
+    5,
+    7
+  ],
+  "prompts_change_the_action": true,
+  "evaluation_note": "One settled observation. Not a completed episode and not G5-B."
+}

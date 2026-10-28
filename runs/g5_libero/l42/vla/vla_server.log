@@ -1,0 +1,8 @@
+INFO:rpent.pi05_vla_server:loading Pi0.5 (embodiment=libero, model_path=/homeL/dong/Projects/dash-vla-libero/checkpoints/pi05_libero_safety_pytorch) ...
+INFO:root:Loaded norm stats from /homeL/dong/Projects/dash-vla-libero/checkpoints/pi05_libero_safety_pytorch/assets/lerobot
+INFO:RLinf:openpi: converted OpenPI PyTorch checkpoint keys from /homeL/dong/Projects/dash-vla-libero/checkpoints/pi05_libero_safety_pytorch/model.safetensors in memory
+INFO:RLinf:openpi param dtypes: img.stem.weight=torch.float32, img.pos_embedding=torch.float32, llm.layers.0.pre_attention_norms.0.scale=torch.float32, llm.layers.0.attn.q_proj.0.weight=torch.bfloat16, action_out_proj.weight=torch.float32
+INFO:RLinf:openpi[eval]: loaded Pi0Config(dtype='bfloat16', paligemma_variant='gemma_2b', action_expert_variant='gemma_300m', pointnet_variant='pcd', action_dim=32, action_horizon=10, max_token_len=200, pi05=True, discrete_state_input=False, pcd=False) (3.35B params) from /homeL/dong/Projects/dash-vla-libero/checkpoints/pi05_libero_safety_pytorch/model.safetensors precision=None num_steps=5 action_horizon=10 action_chunk=10
+INFO:rpent.pi05_vla_server:model ready in 27.1s
+RPC server listening on http://127.0.0.1:50385
+INFO:rpent.rpc_facade:RPC server listening on http://127.0.0.1:50385

@@ -1,0 +1,9 @@
+Configuration: RPent Planner adapted to LIBERO-Safety.
+suite: obstacle_avoidance
+flat_task_id: 0
+seed: 0
+flat_task_id is an index inside suite obstacle_avoidance. It is not a LIBERO-10 task number.
+output_dir: /homeL/dong/Projects/dash-vla-libero/runs/g5_libero/l52b/planner/obstacle_avoidance_t0_s0
+memory_dir: /homeL/dong/Projects/dash-vla-libero/runs/g5_libero/l52b/memory
+The task sentence comes from view_env_state, field task_language.
+Call view_env_state with step 0 first.

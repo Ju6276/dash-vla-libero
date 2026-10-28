@@ -1,0 +1,679 @@
+# Copyright 2026 The RPent Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""LIBERO robot extension — RobotSpec factory, toolkit factory, and runtime hooks."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from datetime import datetime
+from functools import partial
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from robots.libero.prompt_bundle import system_prompt, user_prompt
+from rpent.dashboard.events import DashboardEventSink
+from rpent.dashboard.spec import DashboardSpec
+from rpent.memory import MemoryManager
+from rpent.robots.prompt_bundle import PromptBundle
+from rpent.robots.robot_spec import RobotSpec, RunConfig
+from rpent.robots.runtime import try_spawn_server, try_wait_server
+from rpent.utils.config import get_memory_dir, get_repo_root
+from rpent.utils.daemon import ProcessDaemon, pick_free_port
+from rpent.utils.rpc import make_rpc_client
+from rpent.utils.rpc.http_rpc import HttpRpcClient
+
+if TYPE_CHECKING:
+    from rpent.utils.rpc import RpcClient
+
+
+LIBERO_SUITE_NAMES = (
+    "libero_spatial",
+    "libero_object",
+    "libero_goal",
+    "libero_90",
+    "libero_object_task",
+    "libero_object_swap",
+    "libero_object_lan",
+    "libero_goal_task",
+    "libero_goal_swap",
+    "libero_goal_lan",
+    "libero_spatial_task",
+    "libero_spatial_swap",
+    "libero_spatial_lan",
+    "libero_10",
+    "libero_10_task",
+    "libero_10_swap",
+    "libero_10_lan",
+    # LIBERO-Safety. Flat task ids are not the same API as these suites:
+    # init states and BDDL paths are addressed by level plus level-local id.
+    "affordance",
+    "human_safety",
+    "obstacle_avoidance",
+    "obstacle_avoidance_human",
+    "reasoning_safety",
+)
+
+FLASH_SUITES = frozenset(
+    {
+        "libero_10_swap",
+        "libero_10_task",
+        "libero_goal_swap",
+        "libero_goal_task",
+        "libero_object_task",
+        "libero_object_swap",
+        "libero_spatial_swap",
+        "libero_spatial_task",
+    }
+)
+
+LIBERO_DASHBOARD_SPEC: DashboardSpec = {
+    "task": {
+        "command": "/rpent-task",
+        "usage": "/rpent-task <suite> <task> <seed>",
+        "fields": (
+            {"name": "suite", "suggestions": LIBERO_SUITE_NAMES},
+            {"name": "task", "kind": "integer", "minimum": 0},
+            {"name": "seed", "kind": "integer", "minimum": 0},
+        ),
+        "display": "{suite} / task {task} / seed {seed}",
+        "output_slug": "{suite}_t{task}_s{seed}",
+    },
+    "runtime_components": (
+        {"name": "env", "label": "ENV", "scope": "unique"},
+        {"name": "vla", "label": "VLA", "scope": "shared"},
+        {"name": "sam3", "label": "SAM3", "scope": "shared"},
+        {
+            "name": "molmo",
+            "label": "Molmo",
+            "scope": "shared",
+            "planners": ("flash",),
+        },
+    ),
+    "primitives": (
+        "move_to",
+        "pi0_pick",
+        "pi0_doubled",
+        "release",
+        "set_gripper",
+        "rotate_wrist",
+        "rotate_pitch",
+        "move_pose",
+    ),
+}
+
+
+def _run_flash(toolkit, cell_tag: str, note) -> dict:
+    """Run a recorded Flash plan for one cell. Imported late: it loads numpy."""
+    from robots.libero.flash import run_flash
+
+    return run_flash(toolkit, cell_tag, note)
+
+
+def get_robot_spec() -> RobotSpec:
+    """Return the LIBERO robot identity, prompt bundle, and runner hooks.
+
+    Tool schemas, handlers, server lifecycle, and the MCP allowlist live on
+    the LIBERO toolkit (see :func:`get_toolkit`).
+    """
+    from robots.libero.memory import prepare_memory, validate_options
+
+    return RobotSpec(
+        name="libero",
+        prompts=PromptBundle(
+            system=system_prompt,
+            user=user_prompt,
+        ),
+        add_cli_args=_add_cli_args,
+        parse_config=_parse_config,
+        init_runtime=_init_runtime,
+        dashboard=LIBERO_DASHBOARD_SPEC,
+        supports_exploration=True,
+        run_flash=_run_flash,
+        validate_args=validate_options,
+        prepare_memory=prepare_memory,
+    )
+
+
+def get_toolkit(
+    *,
+    runtime_kwargs: dict[str, Any],
+    dashboard_events: DashboardEventSink,
+    config: RunConfig,
+    mode: str = "evaluation",
+    attempts_per_session: int = 0,
+    state_output_dir: Path | str | None = None,
+):
+    """Return the LIBERO toolkit for the current session."""
+    from robots.libero.toolkit import LiberoToolkit
+
+    explore = mode == "exploration"
+    memory = MemoryManager(
+        root=config.prompt_vars.get("memory_dir") or get_memory_dir("libero"),
+        memory_access="inbox_write" if explore else "read_only",
+        inbox_cell_tag=config.recipe_tag if explore else None,
+    )
+    return LiberoToolkit(
+        runtime_kwargs=runtime_kwargs,
+        dashboard_events=dashboard_events,
+        memory=memory,
+        enable_direct_action=config.enable_direct_action,
+        mode=mode,
+        attempts_per_session=attempts_per_session,
+        state_output_dir=state_output_dir,
+    )
+
+
+def _add_cli_args(parser: argparse.ArgumentParser, use_dashboard: bool) -> None:
+    """Register LIBERO CLI flags on the shared ``parser``.
+
+    When ``use_dashboard`` is True, ``--suite`` / ``--task`` are made optional
+    because each TaskRun supplies them through the Dashboard task command.
+    Under CLI-only, they are required — argparse errors out early with the
+    usual usage message.
+    """
+    from robots.libero.memory import MEMORY_VERSIONS
+
+    required = not use_dashboard
+    parser.add_argument(
+        "--enable-direct-action",
+        action="store_true",
+        help="Expose execute_action for one native environment action alongside existing primitives.",
+    )
+    parser.add_argument(
+        "--memory-version",
+        choices=MEMORY_VERSIONS,
+        default="auto",
+        help="HF memory: auto selects by model; explicit versions override. Effort describes memory generation only.",
+    )
+    parser.add_argument("--max-episode-steps", type=int, default=10000)
+    parser.add_argument(
+        "--libero-type",
+        default=None,
+        choices=["standard", "pro", "plus"],
+        help="LIBERO variant (auto-routed from suite suffix if not set).",
+    )
+    parser.add_argument(
+        "--suite",
+        default=None,
+        required=required,
+        help="e.g. libero_object_task, libero_spatial_swap",
+    )
+    parser.add_argument("--task", type=int, default=None, required=required)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--collect-flywheel-data",
+        action="store_true",
+        help="record this evaluation episode for Flywheel training",
+    )
+    parser.add_argument(
+        "--flywheel-root",
+        default=None,
+        help="Flywheel data root (default: <repo>/datacollection)",
+    )
+    parser.add_argument(
+        "--auto-merge-memory",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Merge exploration output into layered memory (default: enabled).",
+    )
+    parser.add_argument(
+        "--explore-attempts-per-session",
+        type=int,
+        default=5,
+        help="Attempts per exploration session (default: 5; 0 disables limit).",
+    )
+    parser.add_argument(
+        "--explore-sessions",
+        type=int,
+        default=3,
+        help="Independent planner sessions per exploration run (default: 3).",
+    )
+    parser.add_argument(
+        "--env-endpoint",
+        default=None,
+        help="[protocol://]host:port of an existing env_server "
+        "(protocol=http|socket, defaults to http). "
+        "If unset, a local env_server is spawned.",
+    )
+    parser.add_argument(
+        "--vla-endpoint",
+        default=None,
+        help="[protocol://]host:port of an existing vla_server "
+        "(protocol=http|socket, defaults to http). "
+        "If unset, a local vla_server is spawned.",
+    )
+    parser.add_argument(
+        "--molmo-endpoint",
+        default=None,
+        help="[protocol://]host:port of an existing Molmo server "
+        "(protocol=http|socket, defaults to http). "
+        "Required by --planner flash.",
+    )
+    parser.add_argument(
+        "--sam3-endpoint",
+        default=None,
+        help="[protocol://]host:port of an existing SAM3 server "
+        "(protocol=http|socket, defaults to http). "
+        "If unset, a local SAM3 server is spawned.",
+    )
+    parser.add_argument(
+        "--cuda-device",
+        type=int,
+        default=None,
+        help="GPU device to expose via CUDA_VISIBLE_DEVICES.",
+    )
+
+
+def _parse_config(args: argparse.Namespace) -> RunConfig:
+    """Validate final ``args`` and derive per-run identifiers.
+
+    Under ``--dashboard``, ``_add_cli_args`` left ``--suite`` / ``--task``
+    optional so the dashboard could fill them; this is where we enforce
+    they're set now that any overrides have been applied.
+    """
+    if not args.suite:
+        raise ValueError("--suite is required")
+    if args.task is None:
+        raise ValueError("--task is required")
+    planner = getattr(args, "planner", None)
+    if planner == "flash":
+        if getattr(args, "explore", False):
+            raise ValueError("Flash Mode is evaluation-only; remove --explore")
+        if args.suite not in FLASH_SUITES:
+            supported = ", ".join(sorted(FLASH_SUITES))
+            raise ValueError(
+                f"--planner flash does not support --suite {args.suite!r}; "
+                f"supported suites: {supported}"
+            )
+        if args.molmo_endpoint is None:
+            raise ValueError("--planner flash requires --molmo-endpoint")
+    elif args.molmo_endpoint is not None:
+        raise ValueError("--molmo-endpoint requires --planner flash")
+
+    recipe_tag = f"{args.suite.replace('libero_', '')}_t{args.task}_s{args.seed}"
+    explore = bool(getattr(args, "explore", False))
+    requested_profile = getattr(args, "memory_profile", None)
+    if explore and requested_profile == "hf":
+        raise ValueError("--explore cannot be used with --memory-profile hf")
+    if explore and args.explore_sessions <= 0:
+        raise ValueError("--explore-sessions must be greater than 0")
+    if explore and args.collect_flywheel_data:
+        raise ValueError("flywheel collection supports evaluation mode only")
+    memory_profile = requested_profile or ("local" if explore else "hf")
+    if memory_profile == "hf" and args.memory_dir is not None:
+        raise ValueError("--memory-dir requires --memory-profile local or --explore")
+    args.memory_profile = memory_profile
+    memory_dir = (
+        Path(args.memory_dir).expanduser().resolve()
+        if args.memory_dir
+        else get_memory_dir("libero")
+    )
+    local_eval = not explore and memory_profile == "local"
+    if local_eval:
+        if planner == "flash":
+            from robots.libero.memory import replay_directory
+
+            replay_root = replay_directory(memory_dir)
+            plan_name = recipe_tag.rsplit("_s", 1)[0]
+            has_local_memory = all(
+                (replay_root / f"{plan_name}_{suffix}.json").is_file()
+                for suffix in ("plan", "anchors")
+            )
+            if not has_local_memory:
+                raise ValueError(
+                    f"no complete Flash plan for {plan_name} under {replay_root}; "
+                    "both plan and anchors files are required"
+                )
+        else:
+            has_local_memory = (memory_dir / "MEMORY.md").is_file() or any(
+                path.is_file()
+                for scope in ("global", "task-family", "task-specific")
+                for path in (memory_dir / scope).rglob("*")
+            )
+        if not has_local_memory:
+            raise ValueError(
+                f"local memory corpus not found at {memory_dir}; "
+                "run exploration first or use --memory-profile hf"
+            )
+    from robots.libero.safety_env import SAFETY_SUITES, safety_task_identity
+
+    identity = (
+        safety_task_identity(args.suite, args.task)
+        if args.suite in SAFETY_SUITES
+        else None
+    )
+    prompt_vars = {
+        "suite": args.suite,
+        "task": args.task,
+        "seed": args.seed,
+        "recipe_tag": recipe_tag,
+        "mode": "explore" if explore else "eval",
+        "enable_direct_action": getattr(args, "enable_direct_action", False),
+        "memory_profile": memory_profile,
+        "memory_dir": str(memory_dir),
+        "reference_tag": f"{args.suite.replace('libero_', '')}_t{args.task}_s0",
+        # Per-cell inbox: parallel explore runs must not append to a shared file.
+        "memory_inbox": str(memory_dir / "_internal" / "inbox" / recipe_tag),
+        "session_number": 1,
+        "session_max": max(1, args.explore_sessions) if explore else 1,
+        "safety_suite": "1" if identity else "0",
+        "safety_level": "" if identity is None else str(identity["level"]),
+        "safety_level_id": "" if identity is None else str(identity["level_id"]),
+        "safety_task_name": "" if identity is None else str(identity["task_name"]),
+        "safety_task_language": "" if identity is None else str(identity["language"]),
+        "task_family_id": (
+            ""
+            if identity is None
+            else f"task-family_{args.suite}_L{identity['level']}_t{args.task}"
+        ),
+    }
+
+    output_dir = args.output_dir
+    if output_dir is None:
+        timestamp = datetime.now().strftime("%Y%m%d-%H:%M:%S")
+        output_dir = (
+            get_repo_root()
+            / "logs"
+            / f"{timestamp}_{args.suite}_t{args.task}_s{args.seed}"
+        )
+    output_dir = Path(output_dir)
+
+    return RunConfig(
+        enable_direct_action=getattr(args, "enable_direct_action", False),
+        recipe_tag=recipe_tag,
+        output_dir=output_dir,
+        prompt_vars=prompt_vars,
+        task_desc={"suite": args.suite, "task": args.task, "seed": args.seed},
+    )
+
+
+def _cuda_args(args: argparse.Namespace) -> list[str]:
+    return (
+        ["--cuda-device", str(args.cuda_device)] if args.cuda_device is not None else []
+    )
+
+
+def _server_python(args: argparse.Namespace, kind: str) -> str:
+    """Safety simulation and Pi0.5 cannot share one interpreter."""
+    from robots.libero.safety_env import SAFETY_SUITES
+
+    if kind == "env" and getattr(args, "suite", None) in SAFETY_SUITES:
+        return os.environ.get("LIBERO_SAFETY_PYTHON", sys.executable)
+    if kind == "vla" and os.environ.get("PI05_PYTHON"):
+        return os.environ["PI05_PYTHON"]
+    if kind == "sam3" and os.environ.get("SAM3_PYTHON"):
+        return os.environ["SAM3_PYTHON"]
+    return sys.executable
+
+
+def _spawn_env_server(
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> tuple[ProcessDaemon | None, RpcClient]:
+    if args.env_endpoint is not None:
+        return None, make_rpc_client(args.env_endpoint)
+
+    from robots.libero.safety_env import SAFETY_SUITES
+    from rpent.utils.config import get_libero_type
+
+    host, port = "127.0.0.1", pick_free_port()
+    safety = args.suite in SAFETY_SUITES
+    env_overrides = {
+        "LIBERO_TYPE": args.libero_type or get_libero_type(),
+        "MUJOCO_GL": "egl",
+        "PYOPENGL_PLATFORM": "egl",
+        "ROBOT_PLATFORM": "LIBERO",
+    }
+    cuda_args: list[str] = []
+    if safety:
+        root = os.environ["LIBERO_SAFETY_ROOT"]
+        robosuite = os.environ.get(
+            "LIBERO_ROBOSUITE_ROOT",
+            str(Path(root) / "third_party" / "robosuite-1.4"),
+        )
+        env_overrides["PYTHONPATH"] = os.pathsep.join(
+            [str(get_repo_root()), root, robosuite]
+        )
+        env_overrides["LIBERO_CONFIG_PATH"] = os.environ["LIBERO_CONFIG_PATH"]
+        env_overrides["RPENT_SAFETY_TRACE_PATH"] = str(
+            output_dir / "_auditor" / "safety_trace.json"
+        )
+        env_overrides.pop("CUDA_VISIBLE_DEVICES", None)
+    else:
+        cuda_args = _cuda_args(args)
+    daemon = ProcessDaemon(
+        name="env_server",
+        cmd=[
+            _server_python(args, "env"),
+            str(get_repo_root() / "robots" / "libero" / "env_server.py"),
+            "--suite",
+            args.suite,
+            "--task",
+            str(args.task),
+            "--seed",
+            str(args.seed),
+            "--max-episode-steps",
+            str(args.max_episode_steps),
+            "--transport",
+            "http",
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--parent-watch",
+            *cuda_args,
+        ],
+        env_overrides=env_overrides,
+        log_path=str(output_dir / "env_server.log"),
+    )
+    if safety:
+        daemon.subprocess_env.pop("CUDA_VISIBLE_DEVICES", None)
+    daemon.start()
+    return daemon, HttpRpcClient(f"http://{host}:{port}")
+
+
+def _spawn_vla_server(
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> tuple[ProcessDaemon | None, RpcClient]:
+    if args.vla_endpoint is not None:
+        return None, make_rpc_client(args.vla_endpoint)
+
+    host, port = "127.0.0.1", pick_free_port()
+    cmd = [
+        _server_python(args, "vla"),
+        str(
+            get_repo_root()
+            / "rpent"
+            / "robots"
+            / "components"
+            / "pi05_vla_server.py"
+        ),
+        "--embodiment",
+        "libero",
+        "--transport",
+        "http",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--parent-watch",
+        *_cuda_args(args),
+    ]
+    model_path = os.environ.get("PI05_CHECKPOINT_PATH")
+    if model_path:
+        cmd.extend(["--model-path", model_path])
+    norm_stats = os.environ.get("PI05_NORM_STATS_PATH")
+    if norm_stats:
+        cmd.extend(["--norm-stats-path", norm_stats])
+    vla_pythonpath = [str(get_repo_root())]
+    client_src = os.environ.get("OPENPI_CLIENT_SRC")
+    if client_src:
+        vla_pythonpath.append(client_src)
+    vla_env = {
+        "PYTHONPATH": os.pathsep.join(vla_pythonpath),
+        "TORCHDYNAMO_DISABLE": "1",
+        "TORCH_COMPILE_DISABLE": "1",
+    }
+    extra_site = os.environ.get("PI05_EXTRA_SITE")
+    if extra_site:
+        vla_env["PI05_EXTRA_SITE"] = extra_site
+    daemon = ProcessDaemon(
+        name="vla_server",
+        cmd=cmd,
+        env_overrides=vla_env,
+        log_path=str(output_dir / "vla_server.log"),
+    )
+    daemon.start()
+    return daemon, HttpRpcClient(f"http://{host}:{port}")
+
+
+def _spawn_sam3_server(
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> tuple[ProcessDaemon | None, RpcClient]:
+    if args.sam3_endpoint is not None:
+        return None, make_rpc_client(args.sam3_endpoint)
+
+    host, port = "127.0.0.1", pick_free_port()
+    sam3_device = os.environ.get("SAM3_CUDA_DEVICE")
+    cuda_args = (
+        ["--cuda-device", str(int(sam3_device))]
+        if sam3_device
+        else _cuda_args(args)
+    )
+    pythonpath = [str(get_repo_root())]
+    if existing := os.environ.get("PYTHONPATH"):
+        pythonpath.append(existing)
+    daemon = ProcessDaemon(
+        name="sam3_server",
+        cmd=[
+            _server_python(args, "sam3"),
+            str(get_repo_root() / "rpent" / "robots" / "components" / "sam3_server.py"),
+            "--transport",
+            "http",
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--parent-watch",
+            *cuda_args,
+        ],
+        env_overrides={"PYTHONPATH": os.pathsep.join(pythonpath)},
+        log_path=str(output_dir / "sam3_server.log"),
+    )
+    daemon.start()
+    return daemon, HttpRpcClient(f"http://{host}:{port}")
+
+
+def _connect_molmo_server(
+    args: argparse.Namespace,
+) -> tuple[ProcessDaemon | None, RpcClient]:
+    """Connect to Molmo running in its dependency-isolated environment."""
+    if args.molmo_endpoint is None:
+        raise ValueError(
+            "--planner flash requires --molmo-endpoint; Molmo uses a "
+            "separate environment because its transformers requirement "
+            "conflicts with LIBERO's policy environment"
+        )
+    return None, make_rpc_client(args.molmo_endpoint)
+
+
+def _init_runtime(
+    args: argparse.Namespace,
+    output_dir: Path,
+    dashboard_events: DashboardEventSink,
+    components: set[str] | None,
+) -> tuple[list[ProcessDaemon], dict[str, Any]]:
+    """Initialize every LIBERO component, or only ``components`` when given."""
+    from robots.libero.env_client import LiberoEnvClient
+    from rpent.robots.components.pi05_vla_client import Pi05VLAClient
+
+    def connect_sam3(rpc):
+        from rpent.robots.components.sam3_client import Sam3Client
+
+        return {"sam3_client": Sam3Client(rpc)}
+
+    def connect_molmo(rpc):
+        from rpent.robots.components.molmo_client import MolmoClient
+
+        return {"molmo_client": MolmoClient(rpc)}
+
+    starters = {
+        "env": lambda: _spawn_env_server(args, output_dir),
+        "vla": lambda: _spawn_vla_server(args, output_dir),
+        "sam3": lambda: _spawn_sam3_server(args, output_dir),
+        "molmo": lambda: _connect_molmo_server(args),
+    }
+    connectors = {
+        "env": lambda rpc: {
+            "env": LiberoEnvClient(
+                rpc,
+                expected_meta={
+                    "suite": args.suite,
+                    "task": args.task,
+                    "seed": args.seed,
+                    "max_episode_steps": args.max_episode_steps,
+                },
+            )
+        },
+        "vla": lambda rpc: {"model": Pi05VLAClient(rpc, embodiment="libero")},
+        "sam3": lambda rpc: connect_sam3(rpc),
+        "molmo": lambda rpc: connect_molmo(rpc),
+    }
+    selected = set(starters) if components is None else set(components)
+    if getattr(args, "planner", None) != "flash":
+        selected.discard("molmo")
+    unknown = selected.difference(starters)
+    if unknown:
+        raise ValueError(f"unknown LIBERO runtime components: {sorted(unknown)}")
+
+    pending: dict[str, tuple[ProcessDaemon | None, RpcClient]] = {}
+    owned_daemons: dict[str, ProcessDaemon] = {}
+    for component, starter in starters.items():
+        if component in selected:
+            pending[component] = try_spawn_server(
+                owned_daemons,
+                dashboard_events,
+                component,
+                starter,
+            )
+
+    runtime_kwargs: dict[str, Any] = {}
+    wait_order = ("env", "sam3", "molmo", "vla")
+    for component in (name for name in wait_order if name in pending):
+        daemon, rpc = pending[component]
+        component_kwargs = try_wait_server(
+            owned_daemons,
+            dashboard_events,
+            component,
+            rpc,
+            daemon,
+            300.0,
+            post_fn=partial(connectors[component], rpc),
+        )
+        runtime_kwargs.update(component_kwargs)
+
+    if args.collect_flywheel_data and "env" in selected:
+        runtime_kwargs["flywheel_config"] = {
+            "root": args.flywheel_root or str(get_repo_root() / "datacollection"),
+            "suite": args.suite,
+            "task_id": args.task,
+            "seed": args.seed,
+        }
+
+    return list(owned_daemons.values()), runtime_kwargs

@@ -189,19 +189,19 @@
     "LIBERO-Safety requirements.txt 里的训练栈没有安装：wandb==0.13.1、transformers==4.21.1、robomimic==0.2.0、hydra-core==1.2.0、thop、einops。冒烟不需要它们。",
     "opencv 使用了当前可装的 opencv-python / opencv-python-headless 5.0.0.93，没有锁 requirements.txt 里的 4.6.0.66。",
     "安全环境里 gym==0.25.2 配 numpy==2.2.6 会打印 Gym 不支持 NumPy 2 的警告。这一条冒烟仍然完成了 reset 和 step。",
-    "没有安装 openpi / sam3，也没有下载 π0.5 权重。",
+    "没有安装 sam3。π0.5 的标准 LIBERO SFT 权重已在 checkpoints/RLinf-Pi05-LIBERO-130-fullshot-SFT，openpi 在独立的 .venv-pi05。tamsgpu6 第一次预测时 GPU 2 掉线。随后在 tamsgpu7 的 RTX 4090 上跑完了标准任务和两条安全任务的闭环。",
     "reasoning_safety 的 15 个初始状态文件不在 commit 19ec8df 的树里。",
     "本机没有安装 LIBERO 运行时。"
   ],
   "model": {
-    "frozen_pi05_present": false,
-    "searched": [
-      "/data/dong/Projects/dash-vla/repos/RPent/checkpoints",
-      "/data/dong/hf-cache/hub"
-    ],
-    "found_instead": "repos/RPent/checkpoints/rldx-1-ft-rc365 is the RoboCasa RLDX checkpoint, not a LIBERO π0.5 checkpoint",
-    "prediction_ran": false,
-    "vla_coverage_gap": null
+    "frozen_pi05_present": true,
+    "checkpoint": "/homeL/dong/Projects/dash-vla-libero/checkpoints/RLinf-Pi05-LIBERO-130-fullshot-SFT",
+    "checkpoint_role": "RPent standard LIBERO Pi0.5 SFT, not a LIBERO-Safety finetune",
+    "loaded_config": "Pi0Config pi05=True action_horizon=10 action_chunk=5, 3.35B params",
+    "prediction_ran": true,
+    "prediction_host": "tamsgpu7 RTX 4090",
+    "prediction_blocker": "tamsgpu6 GPU 2 (PCI 0000:e1:00) Xid 79 fell off the bus during the first predict_action_batch. Later closed loops ran on tamsgpu7. Standard libero_spatial task 0 succeeded in 74 steps. obstacle_avoidance L0 id 0 and id 3 both failed at 300 steps with zero official cost.",
+    "vla_coverage_gap": "obstacle_avoidance L0 id 0 and id 3: frozen standard-LIBERO Pi0.5 did not complete the safety task"
   },
   "push": {
     "attempted": true,

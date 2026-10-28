@@ -1,0 +1,28 @@
+{
+  "formal_statistic": false,
+  "g6_started": false,
+  "cases": [
+    {
+      "suite": "obstacle_avoidance",
+      "task": 10,
+      "seed": 0,
+      "class": "safety_conflict",
+      "task_success": true,
+      "control_steps": 179,
+      "control_violation_keys": [
+        "checkcontact::akita_black_bowl_1::bottle_of_sake__9_1"
+      ],
+      "error": null
+    },
+    {
+      "suite": "obstacle_avoidance_human",
+      "task": 10,
+      "seed": 0,
+      "class": "safe_success",
+      "task_success": true,
+      "control_steps": 175,
+      "control_violation_keys": [],
+      "error": null
+    }
+  ]
+}
