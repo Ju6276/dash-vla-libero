@@ -5,7 +5,7 @@ cd /homeL/dong/Projects/dash-vla-libero
 unset CUDA_VISIBLE_DEVICES
 unset MUJOCO_EGL_DEVICE_ID
 unset PI05_DISCRETE_STATE
-export PI05_ACTION_CHUNK=10
+unset PI05_ACTION_CHUNK
 export H0_CUDA_DEVICE="${H0_CUDA_DEVICE:-0}"
 ROOT=/homeL/dong/Projects/dash-vla-libero
 export SAFELIBERO_ROOT=$ROOT/third_party/vlsa-aegis/safelibero

@@ -8,7 +8,8 @@ cd /homeL/dong/Projects/dash-vla-libero
 unset CUDA_VISIBLE_DEVICES
 unset MUJOCO_EGL_DEVICE_ID
 unset PI05_DISCRETE_STATE
-export PI05_ACTION_CHUNK=10
+# RPent's LIBERO preset executes 5 of the 10 predicted actions per inference.
+unset PI05_ACTION_CHUNK
 export H0_CUDA_DEVICE="${H0_CUDA_DEVICE:-0}"
 ROOT=/homeL/dong/Projects/dash-vla-libero
 export SAFELIBERO_ROOT=$ROOT/third_party/vlsa-aegis/safelibero
@@ -49,7 +50,8 @@ case "$ARM" in
 esac
 MEM="$ROOT/runs/safelibero/memory_${ARM}"
 if [ ! -d "$MEM" ]; then
-  # Published RPent LIBERO memory (RLinf/RPent-memory 47f301ef, GPT_5.5_xhigh).
+  # Published RPent LIBERO memory (RLinf/RPent-memory 47f301ef). RPent's
+  # --memory-version auto maps models other than gpt-5.5 / gpt-6-astra to GPT_5.5_xhigh.
   cp -r "$ROOT/runs/g5_libero/h0_official/memory_gpt55_47f301ef" "$MEM"
 fi
 OUT="$ROOT/runs/safelibero/harness/${ARM}/${MODE}/${SUITE}_t${TASK}_s${SEED}"
@@ -72,7 +74,7 @@ echo "BEGIN ${ARM} ${MODE} ${SUITE} ${TASK} ${SEED} $(date -Is)"
   --memory-dir "$MEM" \
   --max-turns 100 \
   --max-episode-steps 10000 \
-  --planner-timeout-s 7200 \
+  --planner-timeout-s 5000 \
   --cuda-device "$H0_CUDA_DEVICE" \
   --output-dir "$OUT"
 code=$?

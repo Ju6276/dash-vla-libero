@@ -182,6 +182,8 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
     # ---- episode control -------------------------------------------------
 
     def reset(self):
+        if getattr(self, "steps", 0) > 0:
+            self._log_attempt("reset")
         self.terminated = False
         self.truncated = False
         self.steps = 0
@@ -352,6 +354,28 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
             "step_audits": [r for r in self.step_audits if any(r["audited_cost"].values())],
             "audited_positive_steps": self.positive_steps,
         }
+
+    def close(self) -> None:
+        if self._sim is not None and self.steps > 0:
+            self._log_attempt("close")
+        super().close()
+
+    def _log_attempt(self, ended_by: str) -> None:
+        """Append one line per attempt; safety_trace.json keeps only the last one.
+
+        Exploration resets the scene between attempts and starts a new env
+        process per session, so earlier attempts are recorded here.
+        """
+        path = os.environ.get("RPENT_SAFETY_TRACE_PATH", "")
+        if not path:
+            return
+        trace = self.safety_trace()
+        trace.pop("step_audits")
+        trace["ended_by"] = ended_by
+        target = Path(path + ".attempts.jsonl")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a") as handle:
+            handle.write(json.dumps(trace, default=str) + "\n")
 
     def scene_snapshot(self) -> dict:
         """Object poses and obstacle state. Evaluation side only; does not step."""

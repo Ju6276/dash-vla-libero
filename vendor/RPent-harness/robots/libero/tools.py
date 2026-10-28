@@ -332,7 +332,7 @@ class LiberoPrimitives:
 
         Args:
             prompt: Language sent unchanged to the frozen VLA.
-            max_chunks: Action-chunk budget. Each chunk is 10 control steps. Default 60.
+            max_chunks: Action-chunk budget. Each chunk runs the VLA server's action chunk (5 control steps for the LIBERO preset). Default 60.
         """
         task_success = False
         chunks_used = 0

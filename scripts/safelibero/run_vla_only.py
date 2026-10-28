@@ -25,7 +25,8 @@ from robots.libero.safelibero_env import OFFICIAL_MAX_STEPS
 from robots.libero.tools import LiberoPrimitives
 
 ROOT = Path(os.environ["RPENT_REPO_ROOT"])
-CHUNK = int(os.environ.get("PI05_ACTION_CHUNK", "10"))
+# RPent LIBERO preset: 5 executed actions per VLA call (pi05_vla_server).
+CHUNK = int(os.environ.get("PI05_ACTION_CHUNK", "5"))
 
 
 def start_server(name: str, cmd: list[str], log_path: Path, overrides: dict[str, str]):

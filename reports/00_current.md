@@ -24,7 +24,7 @@ SafeHarness（arXiv 2609.20822）用同样的冻结 π0.5，在 SafeLIBERO 上�
 
 ## 固定协议
 
-- 权重：`RLinf-Pi05-LIBERO-130-fullshot-SFT`，动作块长度 10。规划器：`gpt-6.1-sol`，reasoning `low`。
+- 权重：`RLinf-Pi05-LIBERO-130-fullshot-SFT`，RPent LIBERO 预设（每次推理执行 5 个动作）。规划器：`gpt-6.1-sol`，reasoning `low`。
 - 原始 Harness：Planner、SAM3、Memory、冻结 VLA、解析原语。不用 `full_task_vla`，不做安全微调。
 - 记忆：从官方 RPent 记忆（`47f301ef`）开始，episode 0 探索并写入，独立 episode 评估。
 - 安全判断只用环境进程里的计算（SafeLIBERO 官方位移规则加逐步接触审计），不进入规划器。
