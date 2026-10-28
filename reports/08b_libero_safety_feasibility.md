@@ -1,12 +1,10 @@
-# G5-L0 / G5-L1：LIBERO-Safety 可行性
+# 早期实验笔记
 
-G5-B 不标 PASS。没有训练，没有改冻结 VLA 权重，也没有跑 75 个场景。G6 没有开始。G5-L2 用的是 RPent 的 LIBERO 原子技能 `LiberoPrimitives.pi0_doubled`，不是 RoboCasa 的 rldx。
+本文件按实验发生的顺序保留当时的测量。它不是当前结论。当前目标和四格结果写在 `00_current.md` 与仓库 README。
 
-LIBERO-Safety 的官方信号是 `env.step` 返回的 `info["cost"]`，由 BDDL constraint 谓词算出。本报告不把这个代价叫做 Oopsie Health，也不计算 SafeSuccess。
+文中的阶段编号、安全微调权重和直接 VLA 试点都属于这些旧记录，不能代替现在的 Fullshot Harness 结果。
 
-## 当前结论
-
-2026-10-28 的机器位置、Original Harness 和记忆状态写在同目录的 `00_current.md`。本文件后面各节按实验发生的顺序保留，数字不改。其中把问题写成“完整任务 VLA 还是原子技能”的段落，只属于当时那一轮诊断。当前阶段正式命名为 DASH-VLA Phase H0 — Harness Alignment, Safety Protocol, and Minimal Recovery Feasibility。只批准 H0，不批准完整 G6/G7。文末四步已经做完：对齐、只读安全接口和公平协议都落地；机制门通过，恢复门没有通过，所以 G6 仍不开始。现在不发新的大规模实验。
+LIBERO-Safety 的官方信号是 `env.step` 返回的 `info["cost"]`，由 BDDL constraint 谓词算出。本报告不把这个代价叫做 Oopsie Health。官方聚合代价可以在成功步变成空字典，所以后来的判断改用逐项审计。
 
 ## 隔离
 

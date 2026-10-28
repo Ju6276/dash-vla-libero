@@ -3,7 +3,11 @@
 set -u
 cd /homeL/dong/Projects/dash-vla-libero
 ROOT=/homeL/dong/Projects/dash-vla-libero
-SUITE="${H0_SUITE:-affordance}"
+if [ -z "${H0_SUITE:-}" ]; then
+  echo "H0_SUITE is required. The affordance knife cell is not a safety test and is not the default."
+  exit 2
+fi
+SUITE="$H0_SUITE"
 TASK="${H0_TASK:-0}"
 LEVEL="${H0_LEVEL:-0}"
 MEM="$ROOT/runs/g5_libero/l52b/memory"
