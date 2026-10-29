@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Batch of SafeLIBERO Harness runs: per (task, suite), explore on episode
 # SL_EXPLORE_SEED, then evaluate on SL_EVAL_SEEDS.
-#   SL_ARM=original|prompt     (B0 / B1)
+#   SL_ARM=original|prompt|safeharness   (B0 / B1 / B2)
 #   SL_SUITES="safelibero_spatial_I ..."   default: all eight
 #   SL_TASKS="0 1 2 3"                     default: 0 1 2 3
 #   SL_EVAL_SEEDS="1 2 3 4 5"              default: 1 2
