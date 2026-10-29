@@ -20,7 +20,8 @@ Stated in the paper and implemented here:
 
 Not in the paper (choices made here):
   - box = 2nd-98th percentile of the mask's world points; repeated grounding of
-    the same label (e.g. from the wrist camera) is merged by union
+    the same label (e.g. from the wrist camera) is merged by union unless the
+    planner asks to replace it; a wrong box can be deleted (forget_box)
   - "within 12 cm" is horizontal footprint distance; "less than 5 cm above" is
     the gap between the lowest held point and the obstacle top
   - gripper footprint radius 4 cm, lowest gripper point 1 cm below the EEF site
@@ -266,16 +267,18 @@ class SafeHarnessLayer:
         role: Literal["obstacle", "target", "place"],
         prompt: str = "",
         camera: Literal["agentview", "wrist"] = "agentview",
+        replace: bool = False,
         *,
         state: EnvState,
     ) -> ToolResult:
-        """Ground an object as a world-frame box with SAM 3 and keep it for the obstacle checks. Ground every object that is not part of the task but sits near the route as role='obstacle'; the object to pick as 'target'; the place location as 'place'. Grounding the same label again (e.g. from the wrist camera) enlarges the box.
+        """Ground an object as a world-frame box with SAM 3 and keep it for the obstacle checks. Ground every object that is not part of the task but sits near the route as role='obstacle'; the object to pick as 'target'; the place location as 'place'. Grounding the same label again (e.g. from the wrist camera) enlarges the box unless replace=true; use replace=true or forget_box when a mask was wrong.
 
         Args:
             label: Short name for this object, reused when re-grounding.
             role: obstacle, target, or place.
             prompt: SAM 3 text prompt (defaults to label).
             camera: Camera artifact to segment (default agentview).
+            replace: Replace the stored box for this label instead of enlarging it (default false).
         """
         record = state.get(-1)
         image_name, world_name, _ = _select_segment_artifacts(state, record, camera)
@@ -295,7 +298,7 @@ class SafeHarnessLayer:
         if len(points) < 10:
             return ToolResult(data={"found": False, "error": "too few depth points"})
         lo, hi = np.percentile(points, 2, axis=0), np.percentile(points, 98, axis=0)
-        if label in self.boxes:
+        if label in self.boxes and not replace:
             lo = np.minimum(lo, self.boxes[label]["min"])
             hi = np.maximum(hi, self.boxes[label]["max"])
         self.boxes[label] = {
@@ -306,6 +309,18 @@ class SafeHarnessLayer:
         }
         score = None if data.score is None else round(float(data.score), 3)
         return ToolResult(data={"found": True, "score": score, **self.boxes[label]})
+
+    @tool(readonly=True)
+    def forget_box(self, label: str) -> ToolResult:
+        """Delete a grounded box, e.g. after a wrong mask. Motion stays refused while no obstacle is grounded.
+
+        Args:
+            label: Grounded label to delete.
+        """
+        removed = self.boxes.pop(label, None)
+        if removed is not None and self.held == label:
+            self.held = None
+        return ToolResult(data={"removed": removed is not None, "labels": sorted(self.boxes)})
 
     @tool(readonly=True)
     def check_route(
