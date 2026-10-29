@@ -29,6 +29,9 @@ Not in the paper (choices made here):
   - "within 3 cm of the target" for the VLA: horizontal distance to the target
     box centre <= 3 cm and EEF at most 15 cm above the target top
   - "closer than predicted" means 2 cm below the planned minimum separation
+  - escape: a segment starting inside the clearance zone (e.g. the robot's
+    initial pose next to a tall obstacle) passes while its separation never
+    drops below the starting separation
 """
 
 from __future__ import annotations
@@ -124,6 +127,13 @@ class SafeHarnessLayer:
         start, end = np.asarray(start, float), np.asarray(end, float)
         contact = self._is_contact(start, end)
         n = max(2, int(np.linalg.norm(end - start) / SAMPLE_SPACING) + 1)
+        # Escape (not in the paper): a segment that starts inside the clearance
+        # zone may stay in it while neither gap shrinks, until it leaves the zone.
+        escaping = {
+            obstacle["label"]: self.separation(start, obstacle)
+            for obstacle in self._obstacles()
+            if not self._point_ok(start, obstacle, contact)
+        }
         worst = None
         min_sep = float("inf")
         for t in np.linspace(0.0, 1.0, n):
@@ -131,6 +141,15 @@ class SafeHarnessLayer:
             for obstacle in self._obstacles():
                 horizontal, vertical = self.separation(point, obstacle)
                 min_sep = min(min_sep, max(horizontal, vertical))
+                label = obstacle["label"]
+                if label in escaping:
+                    if self._point_ok(point, obstacle, contact):
+                        del escaping[label]
+                        continue
+                    previous = escaping[label]
+                    if horizontal >= previous[0] - 1e-4 and vertical >= previous[1] - 1e-4:
+                        escaping[label] = (horizontal, vertical)
+                        continue
                 if not self._point_ok(point, obstacle, contact) and worst is None:
                     worst = {
                         "obstacle": obstacle["label"],
