@@ -7,9 +7,10 @@
 #   SL_EVAL_SEEDS="1 2 3 4 5"              default: 1 2
 #   SL_EXPLORE_SEED=0
 #   SL_MEM_TAG=x               separate memory copy and output tree (memory experiment)
-# A finished run leaves .done and is skipped on rerun. On a Codex usage limit the
-# partial run moves to runs/_invalid_quota/ and the batch stops with exit 75;
-# rerun the same command once the quota resets.
+# A finished run leaves .done and is skipped on rerun. On a Codex usage limit or
+# server overload the partial run moves to runs/_invalid_quota/ and the batch
+# stops with exit 75; rerun the same command later. Evaluation is skipped while
+# the explore run is unfinished, since its memory was never merged.
 set -u
 cd /homeL/dong/Projects/dash-vla-libero
 ARM="${SL_ARM:-original}"
@@ -28,7 +29,7 @@ run() {
   SL_ARM=$ARM SL_MEM_TAG=$TAG SL_MODE=$mode SL_SUITE=$suite SL_TASK=$task SL_SEED=$seed \
     scripts/safelibero/run_safelibero_harness.sh 2>&1 | tee "$log"
   local code=${PIPESTATUS[0]}
-  if grep -q usageLimitExceeded "$log"; then
+  if grep -qE 'usageLimitExceeded|serverOverloaded' "$log"; then
     mkdir -p runs/_invalid_quota
     mv "$out" "runs/_invalid_quota/$(basename "$out")_$(date +%s)"
     rm -f "$log"
@@ -41,6 +42,10 @@ run() {
 for task in "${TASKS[@]}"; do
   for suite in "${SUITES[@]}"; do
     run explore "$suite" "$task" "$EXPLORE_SEED"
+    if [ ! -f "runs/safelibero/harness/${ARM}${TAG:+_$TAG}/explore/${suite}_t${task}_s${EXPLORE_SEED}/.done" ]; then
+      echo "SKIP EVAL $suite t$task: explore unfinished"
+      continue
+    fi
     for seed in "${EVAL_SEEDS[@]}"; do
       run eval "$suite" "$task" "$seed"
     done
