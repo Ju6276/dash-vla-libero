@@ -28,7 +28,7 @@ from collections import Counter
 from pathlib import Path
 
 VLA_TOOLS = {"pi0_pick", "pi0_doubled", "full_task_vla"}
-MOTION_TOOLS = {"move_to", "move_pose", "rotate_pitch", "execute_action"}
+MOTION_TOOLS = {"move_to", "move_pose", "rotate_pitch", "rotate_wrist", "execute_action"}
 RELEASE_TOOLS = {"release"}
 CHUNK = 5  # RPent LIBERO preset: executed actions per VLA call
 
