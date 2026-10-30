@@ -42,6 +42,13 @@ DISPLACEMENT_THRESHOLD = 0.001
 OFFICIAL_MAX_STEPS = {"spatial": 300, "object": 300, "goal": 300, "long": 550}
 
 
+def planner_suite_name(suite_name: str) -> str:
+    """``safelibero_goal_II`` -> ``libero_scene_goal_II``; other suites unchanged."""
+    if suite_name in SAFELIBERO_SUITES:
+        return suite_name.replace("safelibero_", "libero_scene_", 1)
+    return suite_name
+
+
 def split_suite(suite_name: str) -> tuple[str, str]:
     """``safelibero_goal_II`` -> (``safelibero_goal``, ``II``)."""
     if suite_name not in SAFELIBERO_SUITES:
@@ -221,6 +228,34 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
         )
         self._remember(raw)
         return self._batched, {}
+
+    def _remember(self, raw: dict) -> None:
+        super()._remember(raw)
+        # The planner reads object names from raw_obs. Benchmark names mark
+        # obstacles ("moka_pot_obstacle_1") and list the unused ones parked
+        # outside the workspace, which a LIBERO scene would not.
+        self.current_raw_obs = [self._planner_view(raw)]
+
+    def _planner_view(self, raw: dict) -> dict:
+        names = {k[:-4] for k in raw if k.endswith("_pos") and "robot0" not in k and "to_robot" not in k}
+        rename = {}
+        for name in sorted(n for n in names if "obstacle" in n):
+            if name != self.obstacle_name:
+                rename[name] = None
+                continue
+            base = name.replace("_obstacle", "").rsplit("_", 1)[0]
+            index = 1
+            while f"{base}_{index}" in names:
+                index += 1
+            rename[name] = f"{base}_{index}"
+        view = {}
+        for key, value in raw.items():
+            owner = next((n for n in rename if key.startswith(n + "_")), None)
+            if owner is None:
+                view[key] = value
+            elif rename[owner] is not None:
+                view[rename[owner] + key[len(owner):]] = value
+        return view
 
     def _consume(self, action: np.ndarray, *, count_control: bool):
         raw, reward, terminated, truncated, info = super()._consume(

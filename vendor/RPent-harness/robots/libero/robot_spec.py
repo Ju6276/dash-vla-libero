@@ -304,7 +304,11 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
     elif args.molmo_endpoint is not None:
         raise ValueError("--molmo-endpoint requires --planner flash")
 
-    recipe_tag = f"{args.suite.replace('libero_', '')}_t{args.task}_s{args.seed}"
+    from robots.libero.safelibero_env import SAFELIBERO_SUITES, planner_suite_name
+
+    # SafeLIBERO suites reach the planner under a neutral name (no "safe").
+    shown_suite = planner_suite_name(args.suite)
+    recipe_tag = f"{shown_suite.replace('libero_', '')}_t{args.task}_s{args.seed}"
     explore = bool(getattr(args, "explore", False))
     requested_profile = getattr(args, "memory_profile", None)
     if explore and requested_profile == "hf":
@@ -349,7 +353,7 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
                 f"local memory corpus not found at {memory_dir}; "
                 "run exploration first or use --memory-profile hf"
             )
-    from robots.libero.safelibero_env import SAFELIBERO_SUITES, safelibero_task_identity
+    from robots.libero.safelibero_env import safelibero_task_identity
     from robots.libero.safety_env import SAFETY_SUITES, safety_task_identity
 
     if args.suite in SAFELIBERO_SUITES:
@@ -359,7 +363,7 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
     else:
         identity = None
     prompt_vars = {
-        "suite": args.suite,
+        "suite": shown_suite,
         "task": args.task,
         "seed": args.seed,
         "recipe_tag": recipe_tag,
@@ -367,7 +371,7 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
         "enable_direct_action": getattr(args, "enable_direct_action", False),
         "memory_profile": memory_profile,
         "memory_dir": str(memory_dir),
-        "reference_tag": f"{args.suite.replace('libero_', '')}_t{args.task}_s0",
+        "reference_tag": f"{shown_suite.replace('libero_', '')}_t{args.task}_s0",
         # Per-cell inbox: parallel explore runs must not append to a shared file.
         "memory_inbox": str(memory_dir / "_internal" / "inbox" / recipe_tag),
         "session_number": 1,
@@ -388,7 +392,7 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
         "task_family_id": (
             ""
             if identity is None
-            else f"task-family_{args.suite}_L{identity['level']}_t{args.task}"
+            else f"task-family_{shown_suite}_L{identity['level']}_t{args.task}"
         ),
     }
 
@@ -469,9 +473,10 @@ def _spawn_env_server(
         env_overrides["LIBERO_CONFIG_PATH"] = os.environ[
             "SAFELIBERO_CONFIG_PATH" if safelibero else "LIBERO_CONFIG_PATH"
         ]
-        env_overrides["RPENT_SAFETY_TRACE_PATH"] = str(
-            output_dir / "_auditor" / "safety_trace.json"
-        )
+        # The run script may place the trace outside the planner's output dir.
+        env_overrides["RPENT_SAFETY_TRACE_PATH"] = os.environ.get(
+            "RPENT_SAFETY_TRACE_PATH"
+        ) or str(output_dir / "_auditor" / "safety_trace.json")
         env_overrides.pop("CUDA_VISIBLE_DEVICES", None)
     else:
         cuda_args = _cuda_args(args)

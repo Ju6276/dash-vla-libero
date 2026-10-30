@@ -13,10 +13,11 @@ Stated in the paper and implemented here:
     than predicted, and a stop more than 3 cm short of a waypoint is reported
     as a stall; the planner replans from the stopping pose
   - the frozen VLA is invoked only once the gripper is within 3 cm of the target
-  - contact adjacency: a contact target whose footprint is within 2 cm of the
-    obstacle gets an approach direction that keeps clearance (farthest from the
-    obstacle), or, if none exists, a gripper yaw tangent to the obstacle and a
-    vertical descent
+  - contact adjacency, tested automatically at each contact (VLA hand-off or
+    vertical descent over a target/place): a contact target whose footprint is
+    within 2 cm of the obstacle gets an approach direction that keeps clearance
+    (farthest from the obstacle), or, if none exists, a gripper yaw tangent to
+    the obstacle and a vertical descent
 
 Not in the paper (choices made here):
   - box = 2nd-98th percentile of the mask's world points; repeated grounding of
@@ -24,15 +25,24 @@ Not in the paper (choices made here):
     planner asks to replace it; a wrong box can be deleted (forget_box)
   - "within 12 cm" is horizontal footprint distance; "less than 5 cm above" is
     the gap between the lowest held point and the obstacle top
-  - gripper footprint radius 4 cm, lowest gripper point 1 cm below the EEF site
+  - gripper footprint: the Panda hand's collision geometry, measured in the EEF
+    frame as +-3.5 cm along the EEF x-axis and +-6.4 cm along the finger
+    opening axis (EEF y), rotated by the wrist yaw and taken as its axis-aligned
+    bound; a motion that changes yaw uses the union of both footprints; lowest
+    gripper point 1 cm below the EEF site
   - the contact segment (near-vertical, within 3 cm of a grounded target in xy)
-    is exempt from the 12 cm rule but may not enter the obstacle box + 2 cm
+    is exempt from the 12 cm rule but must keep the footprint 1 cm clear of the
+    obstacle box; an in-place wrist rotation must keep the same 1 cm or not
+    reduce the separation it starts with
   - "within 3 cm of the target" for the VLA: horizontal distance to the target
     box centre <= 3 cm and EEF at most 15 cm above the target top
   - "closer than predicted" means 2 cm below the planned minimum separation
   - escape: a segment starting inside the clearance zone (e.g. the robot's
     initial pose next to a tall obstacle) passes while its separation never
     drops below the starting separation
+  - a contact that needs the tangent yaw is refused while the wrist is more
+    than 15 degrees off it; the yaw is the rotate_wrist target_yaw (EEF x-axis),
+    and the Panda fingers open along the axis 90 degrees from it
 """
 
 from __future__ import annotations
@@ -52,17 +62,26 @@ STALL_DISTANCE = 0.03
 VLA_HANDOFF = 0.03
 ADJACENCY = 0.02
 # Not in the paper.
-GRIPPER_RADIUS = 0.04
+HAND_HALF_X = 0.035  # Panda hand collision geoms, EEF x-axis (thickness)
+HAND_HALF_Y = 0.064  # EEF y-axis, the finger opening axis
 GRIPPER_BELOW_EEF = 0.01
+CONTACT_CLEARANCE = 0.01
 VLA_MAX_HEIGHT = 0.15
 MONITOR_SLACK = 0.02
 SAMPLE_SPACING = 0.005
+YAW_TOLERANCE = np.deg2rad(15.0)
 MOTION_TOOLS = ("move_to", "move_pose")
 VLA_TOOLS = ("pi0_pick", "pi0_doubled")
+ROTATION_TOOLS = ("rotate_wrist",)
 
 
 class SafetyHalt(Exception):
     """Raised from the per-step monitor to stop a motion primitive."""
+
+
+def _wrap_half_turn(angle: float) -> float:
+    """Angle difference modulo pi (the parallel gripper is symmetric under a half turn)."""
+    return float((angle + np.pi / 2) % np.pi - np.pi / 2)
 
 
 def _rect_distance(xy, box: dict) -> float:
@@ -92,26 +111,37 @@ class SafeHarnessLayer:
     def _targets(self) -> list[dict]:
         return [b for b in self.boxes.values() if b["role"] in ("target", "place")]
 
-    def _carried(self) -> tuple[float, float]:
-        """Footprint radius and depth below the EEF of gripper plus held object."""
-        radius, below = GRIPPER_RADIUS, GRIPPER_BELOW_EEF
+    def _carried(self, yaws=None) -> tuple[float, float, float]:
+        """Axis-aligned half extents (x, y) and depth below the EEF of gripper plus held object."""
+        if yaws is None:
+            yaws = (self._wrist_yaw(),)
+        half_x = half_y = 0.0
+        for yaw in yaws:
+            c, s = abs(np.cos(yaw)), abs(np.sin(yaw))
+            half_x = max(half_x, c * HAND_HALF_X + s * HAND_HALF_Y)
+            half_y = max(half_y, s * HAND_HALF_X + c * HAND_HALF_Y)
+        below = GRIPPER_BELOW_EEF
         if self.held and self.held in self.boxes:
             size = np.asarray(self.boxes[self.held]["max"]) - np.asarray(self.boxes[self.held]["min"])
-            radius = max(radius, float(max(size[:2])) / 2)
+            half_x, half_y = max(half_x, float(size[0]) / 2), max(half_y, float(size[1]) / 2)
             below += float(size[2])
-        return radius, below
+        return half_x, half_y, below
 
-    def separation(self, eef, obstacle: dict) -> tuple[float, float]:
+    def separation(self, eef, obstacle: dict, yaws=None) -> tuple[float, float]:
         """(horizontal gap, vertical gap above the obstacle top) for the carried footprint."""
-        radius, below = self._carried()
-        horizontal = max(0.0, _rect_distance(np.asarray(eef[:2]), obstacle) - radius)
+        half_x, half_y, below = self._carried(yaws)
+        grown = {
+            "min": [obstacle["min"][0] - half_x, obstacle["min"][1] - half_y],
+            "max": [obstacle["max"][0] + half_x, obstacle["max"][1] + half_y],
+        }
+        horizontal = _rect_distance(np.asarray(eef[:2]), grown)
         vertical = float(eef[2]) - below - float(obstacle["max"][2])
         return horizontal, vertical
 
-    def _point_ok(self, eef, obstacle: dict, contact: bool) -> bool:
-        horizontal, vertical = self.separation(eef, obstacle)
+    def _point_ok(self, eef, obstacle: dict, contact: bool, yaws=None) -> bool:
+        horizontal, vertical = self.separation(eef, obstacle, yaws)
         if contact:
-            return horizontal > ADJACENCY or vertical > ADJACENCY
+            return horizontal >= CONTACT_CLEARANCE or vertical >= CONTACT_CLEARANCE
         return horizontal >= HORIZONTAL_CLEARANCE or vertical >= VERTICAL_CLEARANCE
 
     def _is_contact(self, start, end) -> bool:
@@ -124,34 +154,37 @@ class SafeHarnessLayer:
                 return True
         return False
 
-    def check_segment(self, start, end) -> dict:
+    def check_segment(self, start, end, yaws=None) -> dict:
+        """Check a straight segment; ``yaws`` are the wrist yaws it may take (default: current)."""
         start, end = np.asarray(start, float), np.asarray(end, float)
+        if yaws is None:
+            yaws = (self._wrist_yaw(),)
         contact = self._is_contact(start, end)
         n = max(2, int(np.linalg.norm(end - start) / SAMPLE_SPACING) + 1)
         # Escape (not in the paper): a segment that starts inside the clearance
         # zone may stay in it while neither gap shrinks, until it leaves the zone.
         escaping = {
-            obstacle["label"]: self.separation(start, obstacle)
+            obstacle["label"]: self.separation(start, obstacle, yaws)
             for obstacle in self._obstacles()
-            if not self._point_ok(start, obstacle, contact)
+            if not self._point_ok(start, obstacle, contact, yaws)
         }
         worst = None
         min_sep = float("inf")
         for t in np.linspace(0.0, 1.0, n):
             point = start + t * (end - start)
             for obstacle in self._obstacles():
-                horizontal, vertical = self.separation(point, obstacle)
+                horizontal, vertical = self.separation(point, obstacle, yaws)
                 min_sep = min(min_sep, max(horizontal, vertical))
                 label = obstacle["label"]
                 if label in escaping:
-                    if self._point_ok(point, obstacle, contact):
+                    if self._point_ok(point, obstacle, contact, yaws):
                         del escaping[label]
                         continue
                     previous = escaping[label]
                     if horizontal >= previous[0] - 1e-4 and vertical >= previous[1] - 1e-4:
                         escaping[label] = (horizontal, vertical)
                         continue
-                if not self._point_ok(point, obstacle, contact) and worst is None:
+                if not self._point_ok(point, obstacle, contact, yaws) and worst is None:
                     worst = {
                         "obstacle": obstacle["label"],
                         "at_xyz": [round(float(v), 3) for v in point],
@@ -184,7 +217,9 @@ class SafeHarnessLayer:
                 return ToolResult(data={"name": name, "refused": True, **refusal})
             plan = None
             if name in MOTION_TOOLS:
-                plan = self.check_segment(self.primitives._last_obs_eef_pos, kwargs["xyz"])
+                plan = self.check_segment(
+                    self.primitives._last_obs_eef_pos, kwargs["xyz"], self._motion_yaws(name, kwargs)
+                )
                 if plan["min_separation_m"] is not None:
                     self._monitor_floor = plan["min_separation_m"] - MONITOR_SLACK
             try:
@@ -207,7 +242,36 @@ class SafeHarnessLayer:
 
         return gated
 
+    def _motion_yaws(self, name: str, kwargs: dict) -> tuple[float, ...]:
+        """Wrist yaws a primitive passes through: the current one and any commanded one."""
+        current = self._wrist_yaw()
+        if name == "move_pose" and kwargs.get("target_yaw") is not None:
+            return current, float(kwargs["target_yaw"])
+        if name == "rotate_wrist":
+            if kwargs.get("target_yaw") is not None:
+                return current, float(kwargs["target_yaw"])
+            return current, current + float(kwargs.get("delta_yaw") or 0.0)
+        return (current,)
+
+    def _rotation_refusal(self, kwargs: dict) -> dict | None:
+        """An in-place wrist rotation keeps 1 cm or does not lose separation."""
+        eef = self.primitives._last_obs_eef_pos
+        yaws = self._motion_yaws("rotate_wrist", kwargs)
+        for obstacle in self._obstacles():
+            if self._point_ok(eef, obstacle, True, yaws):
+                continue
+            if max(self.separation(eef, obstacle, yaws)) >= max(self.separation(eef, obstacle, yaws[:1])) - 1e-4:
+                continue
+            return {
+                "error": "wrist rotation refused: the hand would swing closer to an obstacle",
+                "obstacle": obstacle["label"],
+                "next": "Move away from the obstacle (verified route) before rotating the wrist.",
+            }
+        return None
+
     def _refusal(self, name: str, kwargs: dict) -> dict | None:
+        if name in ROTATION_TOOLS:
+            return self._rotation_refusal(kwargs)
         if name not in MOTION_TOOLS + VLA_TOOLS:
             return None
         if not self._obstacles():
@@ -216,24 +280,68 @@ class SafeHarnessLayer:
                 "next": "Ground the obstacle with ground_box(role='obstacle') before any motion.",
             }
         if name in MOTION_TOOLS:
-            check = self.check_segment(self.primitives._last_obs_eef_pos, kwargs["xyz"])
+            check = self.check_segment(
+                self.primitives._last_obs_eef_pos, kwargs["xyz"], self._motion_yaws(name, kwargs)
+            )
             if not check["ok"]:
                 return {
                     "error": "route rejected by obstacle check",
                     "check": check,
                     "next": "Insert waypoints that keep 12 cm horizontal or 5 cm vertical clearance; verify them with check_route.",
                 }
+            if check["contact_segment"]:
+                return self._contact_refusal(self._contact_target(kwargs["xyz"]))
             return None
         eef = np.asarray(self.primitives._last_obs_eef_pos)
-        for target in self._targets():
-            centre = (np.asarray(target["min"][:2]) + np.asarray(target["max"][:2])) / 2
-            height = float(eef[2]) - float(target["max"][2])
-            if np.linalg.norm(eef[:2] - centre) <= VLA_HANDOFF and height <= VLA_MAX_HEIGHT:
-                return None
+        target = self._contact_target(eef)
+        if target is not None and float(eef[2]) - float(target["max"][2]) <= VLA_MAX_HEIGHT:
+            return self._contact_refusal(target)
         return {
             "error": "VLA hand-off refused",
             "next": "Move the gripper with verified routes to within 3 cm (horizontal) above a grounded target, then call the VLA.",
         }
+
+    def _contact_target(self, xyz) -> dict | None:
+        """The grounded target or place whose centre is within 3 cm of ``xyz`` horizontally."""
+        xy = np.asarray(xyz, float)[:2]
+        for target in self._targets():
+            centre = (np.asarray(target["min"][:2]) + np.asarray(target["max"][:2])) / 2
+            if np.linalg.norm(xy - centre) <= VLA_HANDOFF:
+                return target
+        return None
+
+    def _contact_refusal(self, target: dict | None) -> dict | None:
+        """Automatic adjacency test at a contact: enforce the tangent yaw when it is required."""
+        if target is None:
+            return None
+        report = self._adjacency(target)
+        yaw = self._wrist_yaw()
+        for entry in report:
+            if "tangent_yaw_rad" in entry and abs(_wrap_half_turn(yaw - entry["tangent_yaw_rad"])) > YAW_TOLERANCE:
+                return {
+                    "error": "contact refused: an adjacent obstacle leaves no clear approach and the wrist is not tangent to it",
+                    "adjacency": report,
+                    "wrist_yaw_rad": round(yaw, 3),
+                    "next": f"rotate_wrist(target_yaw={entry['tangent_yaw_rad']}), then descend vertically at the target centre.",
+                }
+        return None
+
+    def _wrist_yaw(self) -> float:
+        """World yaw of the EEF x-axis, the angle rotate_wrist(target_yaw=...) sets.
+
+        Read from the cached policy state (EEF axis-angle at [3:6]); the step
+        monitor calls this every control step, so it must not go through RPC.
+        """
+        from scipy.spatial.transform import Rotation
+
+        obs = getattr(self.primitives, "_last_obs", None)
+        if obs is not None and "states" in obs:
+            rotation = Rotation.from_rotvec(np.asarray(obs["states"], float).reshape(-1)[3:6])
+        else:
+            q = self.primitives.env.raw_obs()["robot0_eef_quat"]
+            rotation = Rotation.from_quat([q[0], q[1], q[2], q[3]])
+        matrix = rotation.as_matrix()
+        return float(np.arctan2(matrix[1, 0], matrix[0, 0]))
 
     def _after(self, name: str, kwargs: dict, result: ToolResult) -> None:
         data = result.data
@@ -347,14 +455,16 @@ class SafeHarnessLayer:
 
     @tool(readonly=True)
     def contact_check(self, label: str) -> ToolResult:
-        """Adjacency test for picking or placing at a grounded target: whether an obstacle is within 2 cm of the target footprint and, if so, the approach direction farthest from the obstacle or the gripper yaw tangent to it for a vertical descent.
+        """Adjacency test for picking or placing at a grounded target: whether an obstacle is within 2 cm of the target footprint and, if so, the approach direction farthest from the obstacle or the rotate_wrist target_yaw that puts the finger opening tangent to it for a vertical descent. The same test runs automatically at every VLA hand-off and contact descent.
 
         Args:
             label: Grounded target or place label.
         """
         if label not in self.boxes:
             return ToolResult(data={"error": f"unknown label {label}"})
-        target = self.boxes[label]
+        return ToolResult(data={"target": label, "obstacles": self._adjacency(self.boxes[label])})
+
+    def _adjacency(self, target: dict) -> list[dict]:
         centre = (np.asarray(target["min"][:2]) + np.asarray(target["max"][:2])) / 2
         half = (np.asarray(target["max"][:2]) - np.asarray(target["min"][:2])) / 2
         report = []
@@ -378,12 +488,19 @@ class SafeHarnessLayer:
             away = away / (np.linalg.norm(away) + 1e-9)
             entry = {"obstacle": obstacle["label"], "gap_m": round(gap, 3), "adjacent": gap <= ADJACENCY}
             if entry["adjacent"]:
-                pre = np.append(centre + away * (half.max() + GRIPPER_RADIUS + 0.03), target["max"][2] + 0.1)
-                if self.check_segment(pre, pre)["ok"]:
+                pre = np.append(centre + away * (half.max() + HAND_HALF_Y + 0.03), target["max"][2] + 0.1)
+                # A point test: check_segment's escape rule would pass any
+                # zero-length segment that starts inside the clearance zone.
+                if all(self._point_ok(pre, other, False) for other in self._obstacles()):
                     entry["approach_from_xyz"] = [round(float(v), 3) for v in pre]
                 else:
-                    # Opening axis tangent to the obstacle: perpendicular to the away vector.
-                    entry["tangent_yaw_rad"] = round(float(np.arctan2(away[1], away[0]) + np.pi / 2), 3)
+                    # Finger opening tangent to the obstacle, i.e. perpendicular to the
+                    # away vector; the opening axis is 90 degrees from the EEF x-axis, so
+                    # the EEF x-axis points along the away vector. Of the two equivalent
+                    # yaws, report the one nearest the current wrist yaw.
+                    yaw = self._wrist_yaw()
+                    tangent = yaw + _wrap_half_turn(float(np.arctan2(away[1], away[0])) - yaw)
+                    entry["tangent_yaw_rad"] = round(tangent, 3)
                     entry["then"] = "descend vertically at the target centre"
             report.append(entry)
-        return ToolResult(data={"target": label, "obstacles": report})
+        return report

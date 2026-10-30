@@ -37,6 +37,7 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from analyze_harness import MOTION_TOOLS, RELEASE_TOOLS, VLA_TOOLS, label_phases, tool_calls  # noqa: E402
@@ -45,6 +46,14 @@ from robots.libero.safeharness import VLA_HANDOFF, SafeHarnessLayer  # noqa: E40
 
 class _NoPrimitives:
     _step_monitor = None
+
+
+def wrist_yaw(quat) -> float:
+    """rotate_wrist yaw (EEF x-axis) from an xyzw quaternion; the reset pose is ~0."""
+    if quat is None:
+        return 0.0
+    matrix = Rotation.from_quat(quat).as_matrix()
+    return float(np.arctan2(matrix[1, 0], matrix[0, 0]))
 
 
 def scene_layer(cell_geometry: dict) -> SafeHarnessLayer:
@@ -57,9 +66,9 @@ def scene_layer(cell_geometry: dict) -> SafeHarnessLayer:
     return layer
 
 
-def fails(layer: SafeHarnessLayer, start, end, held: str | None) -> bool:
+def fails(layer: SafeHarnessLayer, start, end, held: str | None, yaws) -> bool:
     layer.held = held
-    return not layer.check_segment(start, end)["ok"]
+    return not layer.check_segment(start, end, yaws)["ok"]
 
 
 def nearest_object(eef, objects: dict, obstacle: str) -> str | None:
@@ -79,12 +88,14 @@ def episodes(run: Path, cell_geometry: dict) -> list[list[dict]]:
     calls = tool_calls(run)
     segments = label_phases(calls)
     objects, obstacle = cell_geometry["objects"], cell_geometry["obstacle"]
-    eef_before = []
-    current = cell_geometry["eef_start"]
+    eef_before, yaw_before = [], []
+    current, yaw = cell_geometry["eef_start"], 0.0
     for call in calls:
         eef_before.append(current)
+        yaw_before.append(yaw)
         if call["eef"] is not None:
             current = call["eef"]
+            yaw = wrist_yaw(call.get("eef_quat"))
     result, episode, held = [], [], None
     for segment in segments:
         if segment.get("reset"):
@@ -96,7 +107,8 @@ def episodes(run: Path, cell_geometry: dict) -> list[list[dict]]:
         start, end = eef_before[segment["index"]], call["eef"]
         if start is None or end is None:
             continue
-        episode.append({**segment, "eef_start": start, "eef_end": end, "held": held})
+        yaws = (yaw_before[segment["index"]], wrist_yaw(call.get("eef_quat")))
+        episode.append({**segment, "eef_start": start, "eef_end": end, "held": held, "yaws": yaws})
         closes = call["tool"] in VLA_TOOLS and not call["failed"]
         closes |= call["tool"] == "set_gripper" and float(call["args"].get("gripper", -1)) > 0
         if closes:
@@ -115,8 +127,8 @@ def verdict(segment: dict, layer: SafeHarnessLayer) -> str:
         travel = float(np.linalg.norm(np.asarray(end[:2]) - np.asarray(start[:2])))
         return "not_covered" if travel <= VLA_HANDOFF else "plausible"
     if tool in RELEASE_TOOLS or segment["phase"] == "release":
-        return "covered" if fails(layer, end, end, None) else "not_covered"
-    return "covered" if fails(layer, start, end, held) else "not_covered"
+        return "covered" if fails(layer, end, end, None, segment["yaws"][1:]) else "not_covered"
+    return "covered" if fails(layer, start, end, held, segment["yaws"]) else "not_covered"
 
 
 def main() -> None:
@@ -159,7 +171,7 @@ def main() -> None:
                     if segment["tool"] in MOTION_TOOLS:
                         alarms["analytic"] += 1
                         alarms["analytic_flagged"] += fails(
-                            layer, segment["eef_start"], segment["eef_end"], segment["held"]
+                            layer, segment["eef_start"], segment["eef_end"], segment["held"], segment["yaws"]
                         )
                     continue
                 travel = np.asarray(segment["eef_end"][:2]) - np.asarray(segment["eef_start"][:2])
