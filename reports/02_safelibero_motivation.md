@@ -16,7 +16,7 @@ SafeLIBERO（THU-RCSCT/vlsa-aegis，AEGIS 提出，IROS 2026）满足这两点�
 
 | 部分 | 设置 |
 |---|---|
-| 规划器 | Codex，`gpt-6.1-sol`，reasoning `low`，最多 100 轮，超时 5000 s。官方排行榜用 GPT-6 Astra + `low`；Astra 太贵，换成同代主力模型 |
+| 规划器 | Codex，`gpt-6.1-sol`，reasoning `low`，最多 100 轮，超时 5000 s。官方排行榜用 GPT-6 Astra + `low`；Astra 太贵，换成同代主力模型。2026-10-30 15:47 起由个人 Plus 账号改用 TAMS 工作区账号，模型和设置不变，每周额度用到 80% 时队列自动停止 |
 | 感知 | SAM3 加深度反投影（上游 RPent） |
 | VLA | `RLinf-Pi05-LIBERO-130-fullshot-SFT`（RPent 文档推荐），冻结。RPent LIBERO 预设：每次推理执行 5 个动作（共预测 10 个），去噪 5 步，`discrete_state_input=True`（上游默认） |
 | 工具 | 与上游 RPent 相同。`full_task_vla` 不在工具表中，只供 A 组直接调用 |

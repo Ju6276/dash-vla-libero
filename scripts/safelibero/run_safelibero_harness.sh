@@ -39,7 +39,7 @@ export TRANSFORMERS_OFFLINE=1
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export RPENT_REPO_ROOT=$ROOT/vendor/RPent-harness
-export CODEX_HOME=/homeL/dong/.codex
+export CODEX_HOME="${SL_CODEX_HOME:-/homeL/dong/.codex}"
 export PYTHONPATH="${RPENT_REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 
 MODE="${SL_MODE:?SL_MODE is explore or eval}"
