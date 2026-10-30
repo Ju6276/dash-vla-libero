@@ -56,6 +56,12 @@ def _steps_used(tool: str, args: dict, log: dict) -> int:
     # view_env_state and other read-only tools echo the previous primitive's log.
     if tool not in VLA_TOOLS | MOTION_TOOLS | RELEASE_TOOLS | {"set_gripper"}:
         return 0
+    # B2 turns the wrist tangent to an adjacent obstacle before a contact.
+    extra = int((log.get("reoriented") or {}).get("steps_used") or 0)
+    return extra + _primitive_steps(tool, args, log)
+
+
+def _primitive_steps(tool: str, args: dict, log: dict) -> int:
     if "steps_used" in log:
         return int(log["steps_used"])
     if "chunks_used" in log:
