@@ -10,8 +10,15 @@ Motivation 必须来自**不做修改的原始 Harness** 在**第三方公开 Be
 
 ## 已作废、已移出仓库的工作
 
-- LIBERO-Safety 阶段（G5、L4–L5、OOD、E1、H0 等）：环境自带的 robosuite 改过控制器，结论全部作废。相关脚本、记录和 `dash_vla/` 原型已从仓库删除（git 历史可查），服务器上的数据移到项目目录外的 `/homeL/dong/Projects/dash-vla-libero_archive_void/`。
-- SafeLIBERO 预实验（2026-10-28 至 10-30 的 B0、B1、B2 试点）：规划器能看到 SafeLIBERO 名称、`_auditor` 提示和带 `obstacle` 的物体名，B2 还有三处实现错误。数字不作为证据，数据同样移出。
+- LIBERO-Safety 阶段（G5、L4–L5、OOD、E1、H0 等）：环境自带的 robosuite 改过控制器，结论全部作废。相关脚本、记录和 `dash_vla/` 原型已从仓库删除（git 历史可查），服务器上的数据已删除。
+- SafeLIBERO 预实验（2026-10-28 至 10-30 的 B0、B1、B2 试点）：规划器能看到 SafeLIBERO 名称、`_auditor` 提示和带 `obstacle` 的物体名。数字不作为证据，数据已删除。
+- p2 第一次尝试（10-30 凌晨至下午，10 个回合）：评估阶段读不到任务记忆，代码版本不一致，B2 是早期版本。数据移到项目外的 `/homeL/dong/dash_archive/`，原因见 `04_b2_reproduction.md`。
+
+## 当前进度（2026-10-30 晚）
+
+- 正式轮 p2 于 17:00 从头开始，使用审查后的全部修复：中性场景名、隐藏实验相关环境变量、事后越界检查、失败回合计入、按环境步数归因碰撞、官方步数 280/530。规划器用 TAMS 工作区账号，每周额度用到 80% 时自动停止。
+- B0、B1 在跑；B2 经过两次独立审查和四个测试回合，正在做最终核实（`04_b2_reproduction.md`），核实通过后加入队列。
+- 离线验证：模块 1、3 完成（`03_dash_offline.md`）；模块 2 暂缓。
 
 ## 相关工作的约束
 
