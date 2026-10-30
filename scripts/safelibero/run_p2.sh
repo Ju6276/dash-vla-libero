@@ -11,11 +11,12 @@ set -u
 cd /homeL/dong/Projects/dash-vla-libero
 SUITES=(${SL_SUITES:-safelibero_spatial_I safelibero_spatial_II safelibero_goal_I safelibero_goal_II
         safelibero_object_I safelibero_object_II safelibero_long_I safelibero_long_II})
+# SL_ARMS limits the queue to some arms (default all three, in this order).
 WAIT="${SL_QUOTA_WAIT:-1800}"
 export SL_CODEX_HOME="${SL_CODEX_HOME:-/homeL/dong/.codex-tams}"
 export SL_BUDGET_STOP="${SL_BUDGET_STOP:-80}"
 for suite in "${SUITES[@]}"; do
-  for arm in original prompt safeharness; do
+  for arm in ${SL_ARMS:-original prompt safeharness}; do
     explore=1
     [ "$arm" = safeharness ] && explore=0
     while true; do

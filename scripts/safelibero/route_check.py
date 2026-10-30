@@ -66,9 +66,10 @@ def scene_layer(cell_geometry: dict) -> SafeHarnessLayer:
     return layer
 
 
-def fails(layer: SafeHarnessLayer, start, end, held: str | None, yaws) -> bool:
+def fails(layer: SafeHarnessLayer, start, end, held: str | None, yaws=None) -> bool:
+    """The B2 clearance check of one segment (the gripper point; ``yaws`` is unused)."""
     layer.held = held
-    return not layer.check_segment(start, end, yaws)["ok"]
+    return not layer.check_segment(start, end)["ok"]
 
 
 def nearest_object(eef, objects: dict, obstacle: str) -> str | None:
