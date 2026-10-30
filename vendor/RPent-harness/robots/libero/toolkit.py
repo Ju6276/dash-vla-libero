@@ -95,7 +95,7 @@ class LiberoToolkit(Toolkit):
         # SafeHarness-style baseline (B2): obstacle boxes, route checks, VLA hand-off rule.
         self._safeharness = None
         if os.environ.get("RPENT_SAFEHARNESS") == "1":
-            from robots.libero.safeharness import SafeHarnessLayer
+            from robots.libero.route_layer import SafeHarnessLayer
 
             self._safeharness = SafeHarnessLayer(self._primitives)
             for definition in iter_tools(self._safeharness):

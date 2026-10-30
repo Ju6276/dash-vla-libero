@@ -304,7 +304,7 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
     elif args.molmo_endpoint is not None:
         raise ValueError("--molmo-endpoint requires --planner flash")
 
-    from robots.libero.safelibero_env import SAFELIBERO_SUITES, planner_suite_name
+    from robots.libero.scene_env import SAFELIBERO_SUITES, planner_suite_name
 
     # SafeLIBERO suites reach the planner under a neutral name (no "safe").
     shown_suite = planner_suite_name(args.suite)
@@ -353,8 +353,8 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
                 f"local memory corpus not found at {memory_dir}; "
                 "run exploration first or use --memory-profile hf"
             )
-    from robots.libero.safelibero_env import safelibero_task_identity
-    from robots.libero.safety_env import SAFETY_SUITES, safety_task_identity
+    from robots.libero.scene_env import safelibero_task_identity
+    from robots.libero.scene_env_base import SAFETY_SUITES, safety_task_identity
 
     if args.suite in SAFELIBERO_SUITES:
         identity = safelibero_task_identity(args.suite, args.task)
@@ -389,10 +389,17 @@ def _parse_config(args: argparse.Namespace) -> RunConfig:
         "safety_level_id": "" if identity is None else str(identity["level_id"]),
         "safety_task_name": "" if identity is None else str(identity["task_name"]),
         "safety_task_language": "" if identity is None else str(identity["language"]),
+        # Matches the name the memory merge gives the published file
+        # (suite_regime_t<task>); the SafeLIBERO identity uses the bare level
+        # as regime, the LIBERO-Safety one prefixes it with L.
         "task_family_id": (
             ""
             if identity is None
-            else f"task-family_{shown_suite}_L{identity['level']}_t{args.task}"
+            else (
+                f"task-family_{shown_suite}_{identity['level']}_t{args.task}"
+                if args.suite in SAFELIBERO_SUITES
+                else f"task-family_{shown_suite}_L{identity['level']}_t{args.task}"
+            )
         ),
     }
 
@@ -423,8 +430,8 @@ def _cuda_args(args: argparse.Namespace) -> list[str]:
 
 def _server_python(args: argparse.Namespace, kind: str) -> str:
     """Safety simulation and Pi0.5 cannot share one interpreter."""
-    from robots.libero.safelibero_env import SAFELIBERO_SUITES
-    from robots.libero.safety_env import SAFETY_SUITES
+    from robots.libero.scene_env import SAFELIBERO_SUITES
+    from robots.libero.scene_env_base import SAFETY_SUITES
 
     if kind == "env" and getattr(args, "suite", None) in (*SAFETY_SUITES, *SAFELIBERO_SUITES):
         return os.environ.get("LIBERO_SAFETY_PYTHON", sys.executable)
@@ -442,8 +449,8 @@ def _spawn_env_server(
     if args.env_endpoint is not None:
         return None, make_rpc_client(args.env_endpoint)
 
-    from robots.libero.safelibero_env import SAFELIBERO_SUITES
-    from robots.libero.safety_env import SAFETY_SUITES
+    from robots.libero.scene_env import SAFELIBERO_SUITES
+    from robots.libero.scene_env_base import SAFETY_SUITES
     from rpent.utils.config import get_libero_type
 
     host, port = "127.0.0.1", pick_free_port()

@@ -3,22 +3,25 @@
 SafeHarness has no public code. This implements the rules the paper states and
 adds only what is needed to run them; each addition is listed below.
 
-Stated in the paper and implemented here:
-  - target and obstacle are grounded as boxes by SAM 3 segmentation and kept
-    outside the conversation; a box is re-derived when grounded again
-  - the planner proposes a route as a polyline of waypoints that ends at a
-    pre-grasp or release pose; every segment is checked before it runs, and a
-    segment collides if the gripper, or the held object, passes within 12 cm of
-    an obstacle or less than 5 cm above it
-  - during execution, motion halts when the arm comes closer to an obstacle
+Stated in the paper and implemented here (section numbers of the paper):
+  - each phase begins with visual grounding: the target and the obstacle are
+    grounded as boxes by SAM 3; a box is re-derived when grounded again (3.2)
+  - the route is a polyline of waypoints that ends just above the contact
+    target, at a pre-grasp or release pose, and is checked before it runs; a
+    segment collides if the gripper, or the held object, passes within 12 cm
+    of the obstacle or less than 5 cm above it (3.2, 4.1)
+  - during execution, motion halts when the arm comes closer to the obstacle
     than the checked route predicted, and a stop more than 3 cm short of a
-    waypoint is reported as a stall; the planner replans from that pose
-  - the frozen VLA is invoked only once the gripper is within 3 cm of the target
-  - the contact step that follows a route (the VLA grasp, or lowering the
-    payload over the place) is not route-checked; at each contact, when the
-    gripper footprint is within 2 cm of an obstacle, the gripper is reoriented
-    so its finger opening is tangent to the obstacle and the payload is lowered
-    vertically; contact_check reports the approach direction farthest from it
+    waypoint is a stall; the planner replans from that pose (3.2, 4.1)
+  - the frozen VLA is invoked only once the gripper is within 3 cm of the
+    target (4.1); below the pre-grasp or release pose the gripper opens,
+    descends and closes, and this contact is not route-checked (3.3); the
+    motion after the grasp belongs to route planning (4.4)
+  - adjacency (3.3, 4.1): at each contact, if the gripper footprint at the
+    contact target is within 2 cm of the obstacle, the contact must approach
+    from a direction that keeps clearance, the one farthest from the obstacle;
+    if no direction does, the finger opening is turned tangent to the obstacle
+    and the contact is made vertically
 
 Added so the rules can run (the paper does not specify them):
   - box = 2nd-98th percentile of the mask's world points (depth outliers)
@@ -28,16 +31,25 @@ Added so the rules can run (the paper does not specify them):
     and taken as its axis-aligned bound; lowest gripper point 1 cm below the
     EEF site. "Within 12 cm" is the horizontal gap between this footprint and
     the obstacle box; "less than 5 cm above" is the gap between the lowest
-    gripper or held-object point and the obstacle top
-  - a contact step is a near-vertical segment that ends within 3 cm
-    (horizontally) of a grounded target or place; "within 3 cm of the target"
-    for the VLA is the same horizontal test
+    gripper or held-object point and the obstacle top. A motion that turns the
+    wrist is checked at yaws sampled along the turn
+  - the contact step after a route is a vertical descent that starts at the
+    end pose of a verified route and ends over a grounded target or place;
+    "within 3 cm of the target" for the VLA is a horizontal test
+  - a VLA call ends after the chunk in which its closing gripper settles, or
+    once it carries the gripper out of the 3 cm hand-off region
+  - adjacency directions: 16 headings from the target centre, with contact at
+    the target box boundary on that side; "keeps clearance" means the footprint
+    there is more than 2 cm from every obstacle; the tangent turn holds the
+    gripper as it is (open before a grasp)
+  - the held object is the target nearest the gripper after a VLA call that
+    ends with the gripper closed on something (opening above 4 mm)
   - "closer than predicted" allows 2 cm of servo tracking error
   - escape: a segment that starts inside the clearance zone (e.g. the robot's
     initial pose next to a tall obstacle) passes while neither gap shrinks,
     until it leaves the zone
-  - motion and VLA calls wait until at least one obstacle is grounded (the
-    paper's first step)
+  - which object is the obstacle is the planner's grounding choice (the paper
+    always speaks of the one obstacle and does not say how it is identified)
 """
 
 from __future__ import annotations
@@ -63,12 +75,22 @@ GRIPPER_BELOW_EEF = 0.01
 MONITOR_SLACK = 0.02
 SAMPLE_SPACING = 0.005
 TANGENT_DONE = 0.05  # rad; the wrist counts as already tangent within this
+GRIP_SETTLED = 0.002  # m of finger travel per chunk below which a closing gripper has settled
+HOLDING_OPENING = 0.004  # m; a closed gripper wider than this holds something
+ROUTE_END_TOLERANCE = 0.01  # m; a descent starts at the checked route's end pose
+YAW_SAMPLES = 8
+APPROACH_HEADINGS = 16  # candidate approach directions around the contact target
+AT_CONTACT_POINT = 0.01  # m; the gripper is at the selected contact point within this
 MOTION_TOOLS = ("move_to", "move_pose")
 VLA_TOOLS = ("pi0_pick", "pi0_doubled")
 
 
 class SafetyHalt(Exception):
     """Raised from the per-step monitor to stop a motion primitive."""
+
+
+class ContactDone(Exception):
+    """Raised after a VLA chunk once the contact step is over, to end the VLA call."""
 
 
 def _wrap_half_turn(angle: float) -> float:
@@ -88,12 +110,19 @@ class SafeHarnessLayer:
         self.boxes: dict[str, dict] = {}
         self.held: str | None = None
         self._monitor_floor: float | None = None
+        self._route_end: np.ndarray | None = None
+        self._planned_end: np.ndarray | None = None
+        self._contact: dict | None = None
         primitives._step_monitor = self._on_step
+        primitives._chunk_monitor = self._on_chunk
 
     def clear(self) -> None:
         self.boxes.clear()
         self.held = None
         self._monitor_floor = None
+        self._route_end = None
+        self._planned_end = None
+        self._contact = None
 
     # ---- geometry ----------------------------------------------------------
 
@@ -135,9 +164,12 @@ class SafeHarnessLayer:
         return horizontal >= HORIZONTAL_CLEARANCE or vertical >= VERTICAL_CLEARANCE
 
     def _is_contact(self, start, end) -> bool:
-        """A near-vertical segment ending over a grounded target or place: the contact step."""
-        start, end = np.asarray(start), np.asarray(end)
-        if np.linalg.norm(end[:2] - start[:2]) > 0.01:
+        """The contact step: a vertical descent from the end pose of a checked route
+        (the pre-grasp or release pose) over a grounded target or place."""
+        start, end = np.asarray(start, float), np.asarray(end, float)
+        if self._route_end is None or np.linalg.norm(start - self._route_end) > ROUTE_END_TOLERANCE:
+            return False
+        if np.linalg.norm(end[:2] - start[:2]) > 0.01 or end[2] >= start[2]:
             return False
         return self._contact_target(end) is not None
 
@@ -197,14 +229,30 @@ class SafeHarnessLayer:
             if max(self.separation(eef, obstacle)) < self._monitor_floor:
                 raise SafetyHalt(obstacle["label"])
 
+    def _on_chunk(self, actions) -> None:
+        """End a VLA call once its contact step is over: the gripper has closed and
+        settled, or the VLA has carried the gripper out of the 3 cm hand-off region."""
+        contact = self._contact
+        if contact is None:
+            return
+        opening = float(self.primitives._last_obs_gripper)
+        closing = float(np.asarray(actions, float).reshape(len(actions), -1)[-1, -1]) > 0
+        settled = contact["closing"] and closing and abs(opening - contact["opening"]) < GRIP_SETTLED
+        contact["closing"], contact["opening"] = closing, opening
+        if settled:
+            raise ContactDone("gripper closed")
+        if _rect_distance(np.asarray(self.primitives._last_obs_eef_pos)[:2], contact["target"]) > VLA_HANDOFF:
+            raise ContactDone("gripper left the 3 cm contact region")
+
     def gate(self, name: str, handler):
         """Wrap a primitive with the pre-motion check, monitor and VLA hand-off rule."""
 
         def gated(**kwargs: Any) -> ToolResult:
             refusal = self._refusal(name, kwargs)
+            if refusal is None:
+                refusal, reoriented = self._contact_rule(name, kwargs)
             if refusal is not None:
                 return ToolResult(data={"name": name, "refused": True, **refusal})
-            reoriented = self._reorient_at_contact(name, kwargs)
             plan = None
             if name in MOTION_TOOLS:
                 plan = self.check_segment(
@@ -212,8 +260,16 @@ class SafeHarnessLayer:
                 )
                 if plan["min_separation_m"] is not None:
                     self._monitor_floor = plan["min_separation_m"] - MONITOR_SLACK
+            if name in VLA_TOOLS:
+                self._contact = {
+                    "target": self._contact_target(self.primitives._last_obs_eef_pos),
+                    "closing": False,
+                    "opening": float(self.primitives._last_obs_gripper),
+                }
             try:
                 result = handler(**kwargs)
+            except ContactDone as done:
+                result = self._contact_result(name, kwargs, str(done))
             except SafetyHalt as halt:
                 eef = self.primitives._last_obs_eef_pos
                 return ToolResult(
@@ -227,6 +283,7 @@ class SafeHarnessLayer:
                 )
             finally:
                 self._monitor_floor = None
+                self._contact = None
             if reoriented is not None:
                 result.data["reoriented"] = reoriented
             self._after(name, kwargs, result)
@@ -234,21 +291,35 @@ class SafeHarnessLayer:
 
         return gated
 
+    def _contact_result(self, name: str, kwargs: dict, reason: str) -> ToolResult:
+        """Result of a VLA call the harness ended after its contact step."""
+        primitives = self.primitives
+        opening = float(primitives._last_obs_gripper)
+        return ToolResult(
+            data={
+                "name": name,
+                "instruction": kwargs.get("prompt"),
+                "contact_step_done": True,
+                "reason": reason,
+                "gripper_opening": round(opening, 4),
+                "eef_pos": [round(float(v), 4) for v in primitives._last_obs_eef_pos],
+                "terminated": primitives.env.terminated,
+                "truncated": primitives.env.truncated,
+                "next": "The VLA covers only the contact. Lift and carry along a route verified with check_route.",
+            }
+        )
+
     def _motion_yaws(self, name: str, kwargs: dict) -> tuple[float, ...]:
-        """Wrist yaws a primitive passes through: the current one and any commanded one."""
+        """Wrist yaws a primitive passes through, from the current one to any commanded one."""
         current = self._wrist_yaw()
-        if name == "move_pose" and kwargs.get("target_yaw") is not None:
-            return current, float(kwargs["target_yaw"])
-        return (current,)
+        if kwargs.get("target_yaw") is None:
+            return (current,)
+        turn = _wrap_half_turn(float(kwargs["target_yaw"]) - current)
+        return tuple(current + turn * t for t in np.linspace(0.0, 1.0, YAW_SAMPLES))
 
     def _refusal(self, name: str, kwargs: dict) -> dict | None:
         if name not in MOTION_TOOLS + VLA_TOOLS:
             return None
-        if not self._obstacles():
-            return {
-                "error": "no obstacle grounded",
-                "next": "Ground the obstacle with ground_box(role='obstacle') before any motion.",
-            }
         if name in MOTION_TOOLS:
             check = self.check_segment(
                 self.primitives._last_obs_eef_pos, kwargs["xyz"], self._motion_yaws(name, kwargs)
@@ -275,31 +346,91 @@ class SafeHarnessLayer:
                 return target
         return None
 
-    def _reorient_at_contact(self, name: str, kwargs: dict) -> dict | None:
-        """At a contact, turn the finger opening tangent to an obstacle within 2 cm of the footprint."""
+    def _adjacent(self, xyz, yaw: float) -> tuple[dict, float] | None:
+        """The obstacle nearest the gripper footprint at ``xyz`` if within 2 cm."""
+        nearest = None
+        for obstacle in self._obstacles():
+            gap = self.separation(xyz, obstacle, (yaw,))[0]
+            if gap <= ADJACENCY and (nearest is None or gap < nearest[1]):
+                nearest = (obstacle, gap)
+        return nearest
+
+    def _approach(self, target: dict, yaw: float) -> dict | None:
+        """Adjacency test at the contact target and, if adjacent, the clearing approach.
+
+        A direction is a heading from the target centre; contact from it is made
+        at the target's boundary on that side. It maintains clearance when the
+        footprint there is more than 2 cm from every obstacle; of those, the one
+        whose contact point is farthest from the adjacent obstacle is selected.
+        """
+        centre = (np.asarray(target["min"][:2]) + np.asarray(target["max"][:2])) / 2
+        top = float(target["max"][2])
+        nearest = self._adjacent(np.append(centre, top), yaw)
+        if nearest is None:
+            return None
+        obstacle, gap = nearest
+        half = (np.asarray(target["max"][:2]) - np.asarray(target["min"][:2])) / 2
+        best = None
+        for heading in np.linspace(0.0, 2 * np.pi, APPROACH_HEADINGS, endpoint=False):
+            d = np.array([np.cos(heading), np.sin(heading)])
+            reach = min(half[i] / abs(d[i]) for i in range(2) if abs(d[i]) > 1e-9)
+            point = np.append(centre + d * reach, top)
+            if self._adjacent(point, yaw) is not None:
+                continue
+            distance = _rect_distance(point[:2], obstacle)
+            if best is None or distance > best[1]:
+                best = (point, distance, d)
+        return {
+            "obstacle": obstacle,
+            "footprint_gap_m": gap,
+            "contact_point": None if best is None else best[0],
+            "approach_from_direction_xy": None if best is None else best[2],
+        }
+
+    def _contact_rule(self, name: str, kwargs: dict) -> tuple[dict | None, dict | None]:
+        """Paper adjacency rule at a contact: (refusal, reorientation).
+
+        Not adjacent: any contact. Adjacent with a clearing direction: the contact
+        must be made at that direction's contact point. No clearing direction:
+        the finger opening is turned tangent to the obstacle before a vertical
+        contact.
+        """
         eef = np.asarray(self.primitives._last_obs_eef_pos, float)
         if name in VLA_TOOLS:
             where = eef
         elif name in MOTION_TOOLS and self._is_contact(eef, kwargs["xyz"]):
             where = np.asarray(kwargs["xyz"], float)
         else:
-            return None
+            return None, None
+        target = self._contact_target(where)
+        if target is None:
+            return None, None
         yaw = self._wrist_yaw()
-        nearest = None
-        for obstacle in self._obstacles():
-            gap = self.separation(where, obstacle, (yaw,))[0]
-            if gap <= ADJACENCY and (nearest is None or gap < nearest[1]):
-                nearest = (obstacle, gap)
-        if nearest is None:
-            return None
-        tangent = self._tangent_yaw(where, nearest[0])
-        if abs(tangent - yaw) <= TANGENT_DONE:
-            return None
-        turn = self.primitives.rotate_wrist(target_yaw=tangent).data
-        return {
-            "obstacle": nearest[0]["label"],
-            "footprint_gap_m": round(nearest[1], 3),
+        approach = self._approach(target, yaw)
+        if approach is None:
+            return None, None
+        obstacle = approach["obstacle"]
+        point = approach["contact_point"]
+        if point is not None:
+            if np.linalg.norm(where[:2] - point[:2]) <= AT_CONTACT_POINT:
+                return None, None
+            return {
+                "error": f"contact at '{target['label']}' is adjacent to obstacle '{obstacle['label']}'",
+                "approach_from_direction_xy": [round(float(v), 3) for v in approach["approach_from_direction_xy"]],
+                "contact_point_xy": [round(float(v), 3) for v in point[:2]],
+                "next": "Make the contact from this direction: route to above contact_point_xy, verify it with check_route, then contact there.",
+            }, None
+        tangent = self._tangent_yaw(where, obstacle)
+        if abs(_wrap_half_turn(tangent - yaw)) <= TANGENT_DONE:
+            return None, None
+        # Hold the gripper as it is: open before a grasp, closed over a place.
+        turn = self.primitives.rotate_wrist(target_yaw=tangent, gripper=1.0 if self.held else -1.0).data
+        return None, {
+            "obstacle": obstacle["label"],
+            "footprint_gap_m": round(approach["footprint_gap_m"], 3),
+            "no_clearing_direction": True,
             "target_yaw_rad": round(tangent, 3),
+            "converged": turn.get("converged"),
             "steps_used": int(turn.get("steps_used") or 0),
         }
 
@@ -337,7 +468,22 @@ class SafeHarnessLayer:
         if name in MOTION_TOOLS and data.get("final_dist_m", 0.0) > STALL_DISTANCE:
             data["stalled"] = True
             data["next"] = "Stopped more than 3 cm short of the waypoint. Replan from this pose."
-        closed = name == "pi0_pick" and data.get("success")
+        if name in MOTION_TOOLS:
+            # Reaching the last waypoint of a verified route puts the gripper at
+            # the pre-grasp or release pose, where the contact step may begin.
+            reached = (
+                self._planned_end is not None
+                and not data.get("halted")
+                and not data.get("stalled")
+                and np.linalg.norm(np.asarray(kwargs["xyz"], float) - self._planned_end) < 1e-3
+            )
+            self._route_end = np.asarray(self.primitives._last_obs_eef_pos, float) if reached else None
+            if reached:
+                self._planned_end = None
+        # Any closed gripper wider than empty fingers holds the target, whatever
+        # success the VLA call reported.
+        closed = name in VLA_TOOLS and float(self.primitives._last_obs_gripper) > HOLDING_OPENING
+        closed &= float(self.primitives._last_obs_gripper) < 0.06
         closed |= name == "set_gripper" and float(kwargs.get("gripper", -1)) > 0
         if closed:
             self.held = self._nearest_target()
@@ -417,9 +563,11 @@ class SafeHarnessLayer:
         for waypoint in waypoints:
             segments.append({"to": waypoint, **self.check_segment(start, waypoint)})
             start = waypoint
+        route_ok = all(s["ok"] for s in segments)
+        self._planned_end = np.asarray(waypoints[-1], float) if route_ok else None
         return ToolResult(
             data={
-                "route_ok": all(s["ok"] for s in segments),
+                "route_ok": route_ok,
                 "held_object": self.held,
                 "segments": segments,
             }
@@ -427,26 +575,24 @@ class SafeHarnessLayer:
 
     @tool(readonly=True)
     def contact_check(self, label: str) -> ToolResult:
-        """Adjacency test at a grounded target or place, for the current wrist yaw: whether the gripper footprint over it is within 2 cm of an obstacle, the approach direction farthest from that obstacle, and the rotate_wrist yaw that puts the finger opening tangent to it. At every contact the harness applies the tangent yaw itself when the footprint is within 2 cm.
+        """Adjacency test at a grounded target or place for the current wrist yaw: whether the gripper footprint at it is within 2 cm of an obstacle and, if so, the approach direction that keeps clearance and is farthest from the obstacle, with its contact point. If no direction clears, the harness turns the finger opening tangent to the obstacle itself at the contact, which is then made vertically.
 
         Args:
             label: Grounded target or place label.
         """
         if label not in self.boxes:
             return ToolResult(data={"error": f"unknown label {label}"})
-        target = self.boxes[label]
-        centre = (np.asarray(target["min"][:2]) + np.asarray(target["max"][:2])) / 2
-        where = np.append(centre, target["max"][2])
         yaw = self._wrist_yaw()
-        report = []
-        for obstacle in self._obstacles():
-            gap = self.separation(where, obstacle, (yaw,))[0]
-            entry = {"obstacle": obstacle["label"], "footprint_gap_m": round(gap, 3), "adjacent": gap <= ADJACENCY}
-            if entry["adjacent"]:
-                o_centre = (np.asarray(obstacle["min"][:2]) + np.asarray(obstacle["max"][:2])) / 2
-                away = centre - o_centre
-                away = away / (np.linalg.norm(away) + 1e-9)
-                entry["approach_from_direction_xy"] = [round(float(v), 3) for v in away]
-                entry["tangent_yaw_rad"] = round(self._tangent_yaw(where, obstacle), 3)
-            report.append(entry)
-        return ToolResult(data={"target": label, "wrist_yaw_rad": round(yaw, 3), "obstacles": report})
+        approach = self._approach(self.boxes[label], yaw)
+        report = {"target": label, "wrist_yaw_rad": round(yaw, 3), "adjacent": approach is not None}
+        if approach is not None:
+            report["obstacle"] = approach["obstacle"]["label"]
+            report["footprint_gap_m"] = round(approach["footprint_gap_m"], 3)
+            if approach["contact_point"] is not None:
+                report["approach_from_direction_xy"] = [
+                    round(float(v), 3) for v in approach["approach_from_direction_xy"]
+                ]
+                report["contact_point_xy"] = [round(float(v), 3) for v in approach["contact_point"][:2]]
+            else:
+                report["no_clearing_direction"] = True
+        return ToolResult(data=report)

@@ -9,10 +9,13 @@
 #   SL_EXPLORE_SEED=0
 #   SL_MEM_TAG=x               separate memory copy and output tree (memory experiment)
 #   SL_EXPLORE=0               evaluate on the published memory without exploring
-# A finished run leaves .done and is skipped on rerun. On a Codex usage limit or
-# server overload the partial run moves to runs/_invalid_quota/ and the batch
-# stops with exit 75; rerun the same command later. Evaluation is skipped while
-# the explore run is unfinished, since its memory was never merged.
+# A finished run leaves .done and is skipped on rerun. A run that fails moves
+# (with its audit trace and unmerged memory inbox) to runs/_invalid_quota/ and
+# the batch stops with exit 75 when Codex reports a usage limit or overload;
+# any other failure is an episode outcome: it is kept, marked .failed and .done,
+# logged in runs/p2/failed.log and counted as unsolved (its unmerged memory
+# inbox moves to runs/_invalid_failed/). Leftovers of a killed run go to
+# runs/_invalid_stale/ before the rerun.
 #   SL_CODEX_HOME=DIR          Codex login to plan with (default ~/.codex)
 #   SL_BUDGET_STOP=80          stop with exit 76 before a run once the weekly
 #                              Codex usage of that login reaches this percent
@@ -59,6 +62,18 @@ budget_check() {
 cell_dir() {  # root mode suite task seed
   echo "$1/${ARM}${TAG:+_$TAG}/$2/${3/safelibero_/scene_}_t$4_s$5"
 }
+discard() {  # out audit reason: move a run that does not count out of the way
+  local out=$1 audit=$2 reason=$3 stamp name inbox
+  stamp=$(date +%s)
+  name=$(basename "$out")
+  mkdir -p "runs/_invalid_$reason"
+  [ -d "$out" ] && mv "$out" "runs/_invalid_$reason/${name}_$stamp"
+  # The attempt log appends; a rerun must not inherit the discarded attempts.
+  [ -d "$audit" ] && mv "$audit" "runs/_invalid_$reason/${name}_${stamp}_audit"
+  # Notes an aborted explore session left unmerged must not reach the rerun.
+  inbox="runs/p2/memory_${ARM}${TAG:+_$TAG}/_internal/inbox/$name"
+  [ -d "$inbox" ] && mv "$inbox" "runs/_invalid_$reason/${name}_${stamp}_inbox"
+}
 run() {
   local mode=$1 suite=$2 task=$3 seed=$4
   local out audit
@@ -66,37 +81,47 @@ run() {
   audit=$(cell_dir runs/p2_audit "$mode" "$suite" "$task" "$seed")
   [ -f "$out/.done" ] && { echo "SKIP $mode $suite t$task s$seed"; return; }
   budget_check
+  # Leftovers of a run that was killed or crashed before it was marked done.
+  if [ -d "$out" ] || [ -d "$audit" ]; then
+    discard "$out" "$audit" stale
+    echo "STALE MOVED $mode $suite t$task s$seed"
+  fi
   local log
   log=$(mktemp)
   SL_ARM=$ARM SL_MEM_TAG=$TAG SL_MODE=$mode SL_SUITE=$suite SL_TASK=$task SL_SEED=$seed \
     scripts/safelibero/run_safelibero_harness.sh 2>&1 | tee "$log"
   local code=${PIPESTATUS[0]}
-  if grep -qE 'usageLimitExceeded|serverOverloaded' "$log"; then
-    mkdir -p runs/_invalid_quota
-    local stamp
-    stamp=$(date +%s)
-    mv "$out" "runs/_invalid_quota/$(basename "$out")_$stamp"
-    # The attempt log appends; a rerun must not inherit the aborted attempts.
-    [ -d "$audit" ] && mv "$audit" "runs/_invalid_quota/$(basename "$out")_${stamp}_audit"
-    # Notes an aborted explore session left unmerged must not reach the rerun.
-    local inbox
-    inbox="runs/p2/memory_${ARM}${TAG:+_$TAG}/_internal/inbox/$(basename "$out")"
-    [ -d "$inbox" ] && mv "$inbox" "runs/_invalid_quota/$(basename "$out")_${stamp}_inbox"
+  if [ "$code" -eq 0 ]; then
     rm -f "$log"
+    touch "$out/.done"
+    return
+  fi
+  # Codex also logs retried errors; only a failed run counts as a quota stop.
+  if grep -qE 'usageLimitExceeded|serverOverloaded' "$log"; then
+    rm -f "$log"
+    discard "$out" "$audit" quota
     echo "QUOTA STOP $(date -Is)"
     exit 75
   fi
   rm -f "$log"
-  [ "$code" -eq 0 ] && touch "$out/.done"
+  # Any other failure (planner timeout, agent or env error) is an episode
+  # outcome: keep it and count it as unsolved instead of drawing it again.
+  # Its unmerged notes must not reach a later merge.
+  local inbox
+  inbox="runs/p2/memory_${ARM}${TAG:+_$TAG}/_internal/inbox/$(basename "$out")"
+  if [ -d "$inbox" ]; then
+    mkdir -p runs/_invalid_failed
+    mv "$inbox" "runs/_invalid_failed/$(basename "$out")_$(date +%s)_inbox"
+  fi
+  mkdir -p "$out"
+  echo "$code" > "$out/.failed"
+  touch "$out/.done"
+  echo "FAILED $ARM $mode $suite t$task s$seed exit=$code $(date -Is)" | tee -a runs/p2/failed.log
 }
 for task in "${TASKS[@]}"; do
   for suite in "${SUITES[@]}"; do
     if [ "$EXPLORE" = 1 ]; then
       run explore "$suite" "$task" "$EXPLORE_SEED"
-      if [ ! -f "$(cell_dir runs/p2 explore "$suite" "$task" "$EXPLORE_SEED")/.done" ]; then
-        echo "SKIP EVAL $suite t$task: explore unfinished"
-        continue
-      fi
     fi
     for seed in "${EVAL_SEEDS[@]}"; do
       run eval "$suite" "$task" "$seed"

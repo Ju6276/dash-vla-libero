@@ -6,7 +6,7 @@ analytic waypoint route against the obstacle box (a segment collides if the
 gripper or held object passes within 12 cm of the obstacle or less than 5 cm
 above it), and invokes the frozen VLA only once the gripper is within 3 cm of
 the target. We have no code for it; this replays the same check the online B2
-arm uses (robots/libero/safeharness.py) on the recorded trajectories, with
+arm uses (robots/libero/route_layer.py) on the recorded trajectories, with
 simulator boxes instead of SAM 3 boxes:
 
   analytic motion   covered if the straight start->end segment fails the check
@@ -41,7 +41,7 @@ from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from analyze_harness import MOTION_TOOLS, RELEASE_TOOLS, VLA_TOOLS, label_phases, tool_calls  # noqa: E402
-from robots.libero.safeharness import VLA_HANDOFF, SafeHarnessLayer  # noqa: E402
+from robots.libero.route_layer import VLA_HANDOFF, SafeHarnessLayer  # noqa: E402
 
 
 class _NoPrimitives:

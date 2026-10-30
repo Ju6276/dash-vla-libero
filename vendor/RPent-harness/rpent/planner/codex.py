@@ -70,6 +70,9 @@ _LOOPBACK_NO_PROXY_HOSTS = ("127.0.0.1", "localhost")
 def _codex_environment() -> dict[str, str]:
     """Build the Codex child environment with direct access to its local MCP."""
     env = {**os.environ}
+    # Experiment wiring the planner's shell must not see (comma-separated prefixes).
+    hidden = tuple(p for p in env.pop("RPENT_PLANNER_HIDE_ENV", "").split(",") if p)
+    env = {key: value for key, value in env.items() if not key.startswith(hidden)} if hidden else env
     entries: list[str] = []
     for key in ("NO_PROXY", "no_proxy"):
         entries.extend(item.strip() for item in env.get(key, "").split(","))

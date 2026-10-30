@@ -29,4 +29,17 @@ for suite in "${SUITES[@]}"; do
     done
   done
 done
+missing=$(for arm in original prompt safeharness; do
+  for suite in "${SUITES[@]}"; do
+    modes="eval"; [ "$arm" != safeharness ] && modes="explore eval"
+    for mode in $modes; do
+      seeds="1 2"; [ "$mode" = explore ] && seeds=0
+      for seed in $seeds; do
+        dir="runs/p2/$arm/$mode/${suite/safelibero_/scene_}_t0_s$seed"
+        [ -f "$dir/.done" ] || echo "  $arm $mode $suite s$seed"
+      done
+    done
+  done
+done)
+[ -n "$missing" ] && printf 'MISSING RUNS\n%s\n' "$missing"
 echo "P2 QUEUE DONE $(date -Is)"

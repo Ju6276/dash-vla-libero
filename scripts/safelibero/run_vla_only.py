@@ -4,7 +4,8 @@
 Same checkpoint, VLA server, client and env adapter the Harness uses. No
 planner, no perception, no memory, no analytic primitives: the official task
 sentence goes to ``full_task_vla`` until the scene terminates or the official
-step budget (300, or 550 for LIBERO-10) is spent. Collision follows the
+step budget is spent (300, or 550 for LIBERO-10, counting the 20 wait steps
+as the official loop does, so 280 / 530 control steps). Collision follows the
 SafeLIBERO rule computed in the env process.
 """
 
@@ -21,7 +22,7 @@ from rpent.utils.daemon import ProcessDaemon, pick_free_port
 from rpent.utils.rpc.client_utils import wait_for_ready
 from rpent.utils.rpc.http_rpc import HttpRpcClient
 from robots.libero.env_client import LiberoEnvClient
-from robots.libero.safelibero_env import OFFICIAL_MAX_STEPS
+from robots.libero.scene_env import OFFICIAL_MAX_STEPS, OFFICIAL_WAIT_STEPS
 from robots.libero.tools import LiberoPrimitives
 
 ROOT = Path(os.environ["RPENT_REPO_ROOT"])
@@ -48,13 +49,14 @@ def env_overrides() -> dict[str, str]:
         "LIBERO_SAFETY_ROOT": os.environ["LIBERO_SAFETY_ROOT"],
         "MUJOCO_GL": "egl",
         "PYOPENGL_PLATFORM": "egl",
+        "RPENT_EXPOSE_AUDIT": "1",
         "PYTHONPATH": os.pathsep.join([str(ROOT), os.environ["SAFELIBERO_ROOT"], robosuite]),
     }
 
 
 def run_episode(model, suite: str, task: int, episode: int, out: Path) -> dict:
     base = suite.rsplit("_", 1)[0].replace("safelibero_", "")
-    budget = OFFICIAL_MAX_STEPS[base]
+    budget = OFFICIAL_MAX_STEPS[base] - OFFICIAL_WAIT_STEPS
     row: dict = {"suite": suite, "task": task, "episode": episode, "budget_steps": budget}
     started = time.time()
     env_cmd = [

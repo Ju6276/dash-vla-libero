@@ -1,7 +1,7 @@
 """Drive SafeLiberoRpcEnv directly: reset, push the arm into the obstacle region, read the trace."""
 import json, sys
 import numpy as np
-from robots.libero.safelibero_env import SafeLiberoRpcEnv, safelibero_task_identity
+from robots.libero.scene_env import SafeLiberoRpcEnv, safelibero_task_identity
 
 suite, task, seed = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 env = SafeLiberoRpcEnv(suite, task, seed, 10000)

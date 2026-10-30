@@ -112,8 +112,8 @@ def make_env(
     Safety suites stay in this process. Their benchmark calls take a level,
     so they do not go through rlinf's flat ``LiberoEnv``.
     """
-    from robots.libero.safelibero_env import SAFELIBERO_SUITES, SafeLiberoRpcEnv
-    from robots.libero.safety_env import SAFETY_SUITES, SafetyRpcEnv
+    from robots.libero.scene_env import SAFELIBERO_SUITES, SafeLiberoRpcEnv
+    from robots.libero.scene_env_base import SAFETY_SUITES, SafetyRpcEnv
 
     if suite_name in SAFELIBERO_SUITES:
         return SafeLiberoRpcEnv(
@@ -185,7 +185,8 @@ class LiberoEnvFacade(BaseEnvFacade):
             "env.get_camera_meta": self.get_camera_meta,
             "env.get_task_language": self.get_task_language,
         }
-        if getattr(self._env, "harness_native", False):
+        # Audit reads for the VLA-only baseline; never served to a Harness run.
+        if getattr(self._env, "harness_native", False) and os.environ.get("RPENT_EXPOSE_AUDIT") == "1":
             methods["env.safety_trace"] = self.safety_trace
             methods["env.scene_snapshot"] = self.scene_snapshot
             self._readonly_methods.add("env.safety_trace")

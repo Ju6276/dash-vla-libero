@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -83,6 +84,14 @@ class LiberoPrimitives:
         self._flywheel = None
         # Optional per-step callback (SafeHarness-style execution monitor).
         self._step_monitor: Callable[[], None] | None = None
+        # Optional callback after each VLA action chunk, given the chunk's actions.
+        self._chunk_monitor: Callable[[Any], None] | None = None
+        # Optional ledger of the env steps each primitive spans (experiment audit;
+        # not shown to the planner).
+        self._steps_log = os.environ.get("RPENT_SAFETY_TOOL_STEPS_PATH")
+        self._env_steps = 0
+        self._episode = 0
+        self._primitive_start: tuple[str, int] | None = None
 
     def start_recording(self):
         self._recording = True
@@ -118,6 +127,8 @@ class LiberoPrimitives:
     def reset(self):
         obs, info = self.env.reset()
         self.set_obs(obs)
+        self._env_steps = 0
+        self._episode += 1
         if self._flywheel_config is not None:
             from robots.libero.flywheel import create_episode_writer
 
@@ -125,10 +136,17 @@ class LiberoPrimitives:
         return self._last_obs, info
 
     def begin_primitive(self, name: str) -> None:
+        self._primitive_start = (name, self._env_steps)
         if self._flywheel is not None:
             self._flywheel.begin_primitive(name)
 
     def end_primitive(self) -> None:
+        if self._steps_log and self._primitive_start is not None:
+            name, start = self._primitive_start
+            record = {"episode": self._episode, "tool": name, "start_step": start, "end_step": self._env_steps}
+            with open(self._steps_log, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record) + "\n")
+        self._primitive_start = None
         if self._flywheel is not None:
             self._flywheel.end_primitive()
 
@@ -139,6 +157,7 @@ class LiberoPrimitives:
         """Execute one env action between cancellation checkpoints."""
         self._check_cancelled()
         obs, reward, terminated, truncated, _info = self.env.step(action)
+        self._env_steps += 1
         if self._flywheel is not None:
             self._flywheel.add_transition(action, obs, reward, terminated, truncated)
         self.set_obs(obs)
@@ -173,6 +192,7 @@ class LiberoPrimitives:
             actions = self.model.predict(self._last_obs, options={"mode": "eval"})
             self._check_cancelled()
 
+            self._env_steps += len(actions)
             vla_id = (
                 self._flywheel.add_proposal(instruction, actions)
                 if self._flywheel is not None
@@ -201,6 +221,8 @@ class LiberoPrimitives:
                         )
                 obs = chunk_obs[-1]
             self.set_obs(obs)
+            if self._chunk_monitor is not None:
+                self._chunk_monitor(actions)
             return self._last_obs
         finally:
             if original_task is not None:
