@@ -1,0 +1,37 @@
+eval    goal_II    s1 S- collide@None None/None disp=0.000 steps=1096/1096 calls=103
+eval    goal_II    s2 S- collide@None None/None disp=0.000 steps=801/801 calls=68
+eval    goal_I     s1 S- collide@None None/None disp=0.000 steps=237/237 calls=49
+eval    goal_I     s2 S- collide@None None/None disp=0.000 steps=307/307 calls=41
+eval    long_II    s1 S- collide@None None/None disp=0.000 steps=899/899 calls=98
+eval    long_II    s2 S- collide@None None/None disp=0.000 steps=1002/1002 calls=86
+eval    long_I     s1 S- collide@None None/None disp=0.001 steps=943/943 calls=74
+eval    long_I     s2 S- collide@None None/None disp=0.000 steps=925/925 calls=76
+eval    object_II  s1 S- collide@None None/None disp=0.000 steps=679/679 calls=56
+eval    object_II  s2 S- collide@None None/None disp=0.000 steps=555/555 calls=66
+eval    object_I   s1 S- collide@None None/None disp=0.000 steps=437/437 calls=50
+eval    object_I   s2 S- collide@None None/None disp=0.000 steps=752/752 calls=61
+eval    spatial_II s1 S- collide@None None/None disp=0.000 steps=589/589 calls=95
+eval    spatial_II s2 S- collide@None None/None disp=0.000 steps=591/591 calls=85
+eval    spatial_I  s1 S- collide@None None/None disp=0.000 steps=297/297 calls=62
+eval    spatial_I  s2 S- collide@None None/None disp=0.000 steps=495/499 calls=84
+{
+  "eval": {
+    "n_attempted": 16,
+    "n": 16,
+    "failed_runs": 0,
+    "TSR": "16/16",
+    "CAR": "16/16",
+    "SSR": "16/16",
+    "SBU": "0/16",
+    "success_within_official_budget": "1/16",
+    "TSR@900": "12/16",
+    "CAR@900": "16/16",
+    "SSR@900": "12/16",
+    "collision_phases": {},
+    "G4_uncovered_share": "0/0"
+  },
+  "memory_merged_unsafe_success": "0/0",
+  "eval_collided_after_unsafe_memory": "0/0",
+  "eval_collided_after_clean_memory": "0/16",
+  "explore_attempts_collided": "0/0"
+}

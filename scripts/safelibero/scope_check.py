@@ -55,8 +55,9 @@ def main() -> None:
         bad = []
         for entry in touched(stream):
             text = entry
-            for prefix in own:  # the run's own dirs may carry arm or scene names
-                text = text.replace(prefix, "<own>")
+            for prefix in own:  # the run's own dirs may carry arm or scene names,
+                # and the planner names its own memory files (e.g. "...-collision.md")
+                text = re.sub(re.escape(prefix) + r"(?![^\s'\"]*\.\.)[^\s'\"]*", "<own>", text)
             if HINTS.search(text) or re.search(r"runs/p2/(?!<own>)", text) or "memory_" in text:
                 bad.append(entry[:200])
         if bad:
