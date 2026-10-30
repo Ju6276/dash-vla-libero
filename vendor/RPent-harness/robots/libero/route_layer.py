@@ -46,14 +46,15 @@ Added so the rules can run (the paper does not specify them):
     skills (pi0_doubled: knobs, drawers, buttons) run as upstream, since their
     motion is the contact itself
   - the adjacency test runs at every contact (pi0_pick / pi0_doubled, a
-    contact descent, and release over a place) at the current wrist yaw.
+    contact descent, and releasing a held object) at the current wrist yaw.
     Directions: 16 headings from the target centre; along each, the contact
     point is the nearest one (5 mm steps, within the target box) where the
     footprint is more than 2 cm from every obstacle; of these, the heading
     pointing farthest away from the obstacle is selected. A contact is accepted
-    within 3 cm (the stall tolerance) of the selected point where the footprint
-    keeps clearance. The selected direction is kept within a phase, until the
-    gripper picks up or puts down an object or a box moves by more than 2 cm
+    within 3 cm (the stall tolerance) of the selected point. The selection is
+    kept within a phase, until the gripper picks up or puts down an object, a
+    box moves by more than 2 cm, or the point no longer clears at the current
+    wrist yaw
   - the tangent turn holds the gripper as it is (open before a grasp); a
     planner target_yaw on that contact motion is replaced by the tangent yaw
   - the held object is the target nearest the gripper after a grasp that ends
@@ -472,13 +473,13 @@ class SafeHarnessLayer:
         Every contact begins with the adjacency test of the footprint at the
         contact target, at the current wrist yaw. Not adjacent: any contact.
         Adjacent with a clearing direction: the contact must be made at that
-        direction's point (within the stall tolerance) where the footprint keeps
-        clearance. No clearing direction: the finger opening is turned tangent
-        to the obstacle and the contact is made vertically.
+        direction's point (within the stall tolerance). No clearing direction:
+        the finger opening is turned tangent to the obstacle and the contact is
+        made vertically. Opening an empty gripper is not a contact.
         """
         eef = np.asarray(self.primitives._last_obs_eef_pos, float)
-        if name in VLA_TOOLS or name == "release":
-            where = eef
+        if name in VLA_TOOLS or (name == "release" and self.held):
+            where = eef  # opening an empty gripper is no contact
         elif name in MOTION_TOOLS and self._is_contact(eef, kwargs["xyz"]):
             where = np.asarray(kwargs["xyz"], float)
         else:
@@ -491,7 +492,13 @@ class SafeHarnessLayer:
         if self._adjacent(np.append(centre, target["max"][2]), yaw) is None:
             return None, None
         plan = self._contact_plans.get(target["label"])
-        if plan is None:
+        stale = (
+            plan is not None
+            and plan["contact_point"] is not None
+            and self._adjacent(plan["contact_point"], yaw) is not None
+        )
+        if plan is None or stale:
+            # Decided anew when the selected point no longer clears at this yaw.
             plan = self._approach(target, yaw)
             if plan is None:
                 return None, None
@@ -501,9 +508,8 @@ class SafeHarnessLayer:
             return None, None  # the fallback was applied for this contact
         point = plan["contact_point"]
         if point is not None:
-            at_point = np.linalg.norm(where[:2] - point[:2]) <= STALL_DISTANCE
-            if at_point and self._adjacent(where, yaw) is None:
-                return None, None
+            if np.linalg.norm(where[:2] - point[:2]) <= STALL_DISTANCE:
+                return None, None  # at the selected point, within the stall tolerance
             return {
                 "error": f"contact at '{target['label']}' is adjacent to obstacle '{obstacle['label']}'",
                 "approach_from_direction_xy": [round(float(v), 3) for v in plan["approach_from_direction_xy"]],
@@ -696,7 +702,11 @@ class SafeHarnessLayer:
         adjacent = self._adjacent(np.append(centre, target["max"][2]), yaw) is not None
         approach = None
         if adjacent:
-            approach = self._contact_plans.get(label) or self._approach(target, yaw)
+            approach = self._contact_plans.get(label)
+            if approach is None or (
+                approach["contact_point"] is not None and self._adjacent(approach["contact_point"], yaw) is not None
+            ):
+                approach = self._approach(target, yaw)
             if approach is not None:
                 self._contact_plans[label] = approach
             adjacent = approach is not None
