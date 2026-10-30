@@ -178,6 +178,30 @@ def _batch_obs(raw: dict, language: str) -> dict:
     }
 
 
+def _body_top_z(sim, root_body_id: int) -> float | None:
+    """Highest point of this body's collision geoms, including child bodies.
+
+    ``geom_rbound`` is the bounding radius, so this sits at or above the surface.
+    """
+    model = sim.model
+    bodies = {int(root_body_id)}
+    changed = True
+    while changed:
+        changed = False
+        for body_id in range(int(model.nbody)):
+            parent = int(model.body_parentid[body_id])
+            if parent in bodies and body_id not in bodies:
+                bodies.add(body_id)
+                changed = True
+    tops: list[float] = []
+    for geom_id in range(int(model.ngeom)):
+        if int(model.geom_bodyid[geom_id]) not in bodies:
+            continue
+        center = sim.data.geom_xpos[geom_id]
+        tops.append(float(center[2]) + float(model.geom_rbound[geom_id]))
+    return max(tops) if tops else None
+
+
 class _Closer:
     def __init__(self, env: SafetyRpcEnv) -> None:
         self._env = env
@@ -251,12 +275,18 @@ class SafetyRpcEnv:
         self.audit = bool(audit)
         self.init_bank_size = int(len(self._init_bank))
         self.max_episode_steps = int(max_episode_steps)
-        self._sim = OffScreenRenderEnv(
-            bddl_file_name=str(bddl),
-            camera_heights=256,
-            camera_widths=256,
-            camera_depths=True,
-        )
+        sim_kwargs = {
+            "bddl_file_name": str(bddl),
+            "camera_heights": 256,
+            "camera_widths": 256,
+            "camera_depths": True,
+        }
+        # The stock simulator horizon is 1000 and then refuses another step.
+        # Only the pick-condition sweep sets this. Official harness runs do not.
+        if os.environ.get("RPENT_SAFETY_IGNORE_HORIZON") == "1":
+            sim_kwargs["ignore_done"] = True
+            sim_kwargs["horizon"] = 10000
+        self._sim = OffScreenRenderEnv(**sim_kwargs)
         self.env = _Closer(self)
         self.terminated = False
         self.truncated = False
@@ -394,13 +424,17 @@ class SafetyRpcEnv:
             names.extend(getattr(domain, source, {}) or {})
         geom_names = reading["robot_geom_names"]
         body_pos = {}
+        body_top = {}
         robot_contact = {}
         for name in names:
             try:
-                position = sim.data.body_xpos[domain.obj_body_id[name]]
+                body_id = int(domain.obj_body_id[name])
+                position = sim.data.body_xpos[body_id]
                 body_pos[name] = [float(value) for value in position[:3]]
+                body_top[name] = _body_top_z(sim, body_id)
             except Exception as exc:
                 body_pos[name] = None
+                body_top[name] = None
                 robot_contact[name] = f"{type(exc).__name__}: {exc}"
                 continue
             try:
@@ -425,6 +459,7 @@ class SafetyRpcEnv:
                 else None
             ),
             "body_pos": body_pos,
+            "body_top": body_top,
             "robot_contact": robot_contact,
             "audited_cost": reading["audited_cost"],
             "official_predicate": reading["official_predicate"],
@@ -433,19 +468,33 @@ class SafetyRpcEnv:
     def harness_action_spec(self) -> dict:
         from rpent.robots.components.action_spec import box_action_spec
 
-        spec = getattr(self._sim, "action_spec", None)
-        if spec is not None and hasattr(spec, "shape"):
-            low, high = np.asarray(spec.low, dtype=float), np.asarray(spec.high, dtype=float)
-        else:
-            low = np.full(7, -1.0)
-            high = np.full(7, 1.0)
-        return {
-            "default": box_action_spec(
-                low.reshape(-1),
-                high.reshape(-1),
-                "LIBERO-Safety OSC action, shape (7,), gripper -1 opens and +1 closes.",
+        # Same bounds and wording as upstream LiberoEnvFacade.get_action_spec
+        # (robosuite 1.4 single-arm controller branch).
+        low, high = self._sim.env.action_spec
+        arm = self._sim.env.robot_configs[0]["controller_config"]
+        mode = "delta" if arm.get("control_delta", True) else "absolute"
+        gains = {
+            "fixed": "",
+            "variable_kp": "6 stiffness gains, then ",
+            "variable": "6 damping ratios, 6 stiffness gains, then ",
+        }[arm.get("impedance_mode", "fixed")]
+        description = (
+            f"Native {arm['type']} action: {gains}"
+            "[x, y, z, rx, ry, rz], then gripper. "
+            f"Arm commands use the world reference frame and {mode} control; "
+            "rotation is an axis-angle vector, not Euler angles. "
+        )
+        if mode == "delta":
+            description += (
+                "Arm inputs are normalized controller commands, linearly mapped "
+                f"from input_min={arm['input_min']} / input_max={arm['input_max']} "
+                f"to output_min={arm['output_min']} / output_max={arm['output_max']} "
+                "(xyz in metres per action; rotation in radians per action). "
             )
-        }
+        else:
+            description += "Arm inputs are absolute xyz in metres and axis-angle in radians. "
+        description += "Gripper: -1 opens, +1 closes, 0 keeps the current command."
+        return {"default": box_action_spec(low, high, description)}
 
     def reset(self):
         self.terminated = False

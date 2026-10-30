@@ -39,7 +39,6 @@ export TRANSFORMERS_OFFLINE=1
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export RPENT_REPO_ROOT=$ROOT/vendor/RPent-harness
-export RPENT_OFFICIAL_TOOLSET=1
 export CODEX_HOME=/homeL/dong/.codex
 export PYTHONPATH="${RPENT_REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 

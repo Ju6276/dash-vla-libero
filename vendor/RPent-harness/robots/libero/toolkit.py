@@ -92,9 +92,6 @@ class LiberoToolkit(Toolkit):
             self.add_tool(
                 definition.with_handler(partial(definition, state=self._state))
             )
-        hidden = set()
-        if os.environ.get("RPENT_OFFICIAL_TOOLSET") == "1":
-            hidden.add("full_task_vla")
         # SafeHarness-style baseline (B2): obstacle boxes, route checks, VLA hand-off rule.
         self._safeharness = None
         if os.environ.get("RPENT_SAFEHARNESS") == "1":
@@ -109,8 +106,6 @@ class LiberoToolkit(Toolkit):
                 )
                 self.add_tool(definition.with_handler(handler))
         for definition in iter_tools(self._primitives):
-            if definition.name in hidden:
-                continue
             if definition.name == "segment":
                 handler = partial(definition, state=self._state)
             else:

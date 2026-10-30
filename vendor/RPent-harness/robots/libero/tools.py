@@ -330,9 +330,10 @@ class LiberoPrimitives:
             }
         )
 
-    @tool
+    # Not a planner tool (upstream RPent has none like it); the VLA-only
+    # baseline (scripts/safelibero/run_vla_only.py) calls it directly.
     def full_task_vla(self, prompt: str, *, max_chunks: int = 60) -> ToolResult:
-        """Run the frozen VLA on the language you supply, including a complete task sentence. Continues until the environment terminates or max_chunks is used. success mirrors environment termination only. This skill is available together with pi0_pick and the scripted motion tools.
+        """Run the frozen VLA on the language you supply, including a complete task sentence. Continues until the environment terminates or max_chunks is used. success mirrors environment termination only.
 
         Args:
             prompt: Language sent unchanged to the frozen VLA.
