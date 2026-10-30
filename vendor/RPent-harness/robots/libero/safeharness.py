@@ -25,11 +25,13 @@ Not in the paper (choices made here):
     planner asks to replace it; a wrong box can be deleted (forget_box)
   - "within 12 cm" is horizontal footprint distance; "less than 5 cm above" is
     the gap between the lowest held point and the obstacle top
-  - gripper footprint: the Panda hand's collision geometry, measured in the EEF
-    frame as +-3.5 cm along the EEF x-axis and +-6.4 cm along the finger
-    opening axis (EEF y), rotated by the wrist yaw and taken as its axis-aligned
-    bound; a motion that changes yaw uses the union of both footprints; lowest
-    gripper point 1 cm below the EEF site
+  - gripper footprint: the collision mesh vertices of the Panda hand, fingers
+    and wrist link (link7) in the EEF frame, +-4.4 cm along the EEF x-axis and
+    +-10.4 cm along the finger opening axis (EEF y; the hand body is that wide
+    3-12 cm above the EEF), rotated by the wrist yaw and taken as its
+    axis-aligned bound; a motion that changes yaw uses the union of both
+    footprints; lowest gripper point 1 cm below the EEF site. The arm links
+    above the wrist are not modelled, as in the paper
   - the contact segment (near-vertical, within 3 cm of a grounded target in xy)
     is exempt from the 12 cm rule but must keep the footprint 1 cm clear of the
     obstacle box; an in-place wrist rotation must keep the same 1 cm or not
@@ -62,8 +64,8 @@ STALL_DISTANCE = 0.03
 VLA_HANDOFF = 0.03
 ADJACENCY = 0.02
 # Not in the paper.
-HAND_HALF_X = 0.035  # Panda hand collision geoms, EEF x-axis (thickness)
-HAND_HALF_Y = 0.064  # EEF y-axis, the finger opening axis
+HAND_HALF_X = 0.044  # Panda hand, fingers and link7 mesh vertices, EEF x-axis
+HAND_HALF_Y = 0.104  # EEF y-axis, the finger opening axis (hand body width)
 GRIPPER_BELOW_EEF = 0.01
 CONTACT_CLEARANCE = 0.01
 VLA_MAX_HEIGHT = 0.15
