@@ -40,12 +40,15 @@ Added so the rules can run (the paper does not specify them):
     "within 3 cm of the target" for the VLA is a horizontal test
   - a VLA call ends after the chunk in which its closing gripper settles, or
     once it carries the gripper out of the 3 cm hand-off region
+  - the adjacency decision for a contact target is made once, at the wrist yaw
+    of its first contact, and kept until its target or an obstacle box moves by
+    more than 2 cm; the held object is never a contact target
   - adjacency directions: 16 headings from the target centre, with contact at
     the target box boundary on that side; "keeps clearance" means the footprint
     there is more than 2 cm from every obstacle; the tangent turn holds the
     gripper as it is (open before a grasp)
   - the held object is the target nearest the gripper after a VLA call that
-    ends with the gripper closed on something (opening above 4 mm)
+    ends with the gripper closed on something (opening above 3 mm)
   - "closer than predicted" allows 2 cm of servo tracking error
   - escape: a segment that starts inside the clearance zone (e.g. the robot's
     initial pose next to a tall obstacle) passes while neither gap shrinks,
@@ -78,11 +81,11 @@ MONITOR_SLACK = 0.02
 SAMPLE_SPACING = 0.005
 TANGENT_DONE = 0.05  # rad; the wrist counts as already tangent within this
 GRIP_SETTLED = 0.002  # m of finger travel per chunk below which a closing gripper has settled
-HOLDING_OPENING = 0.004  # m; a closed gripper wider than this holds something
+HOLDING_OPENING = 0.003  # m; a closed gripper wider than this holds something
 ROUTE_END_TOLERANCE = 0.01  # m; a descent starts at the checked route's end pose
 YAW_SAMPLES = 8
 APPROACH_HEADINGS = 16  # candidate approach directions around the contact target
-AT_CONTACT_POINT = 0.01  # m; the gripper is at the selected contact point within this
+AT_CONTACT_POINT = MONITOR_SLACK  # m; at the selected contact point within servo error
 MOTION_TOOLS = ("move_to", "move_pose")
 VLA_TOOLS = ("pi0_pick", "pi0_doubled")
 
@@ -115,6 +118,9 @@ class SafeHarnessLayer:
         self._route_end: np.ndarray | None = None
         self._planned_end: np.ndarray | None = None
         self._contact: dict | None = None
+        # One adjacency decision per contact target (paper: each contact begins
+        # with one adjacency test), kept until its boxes move.
+        self._contact_plans: dict[str, dict] = {}
         primitives._step_monitor = self._on_step
         primitives._chunk_monitor = self._on_chunk
 
@@ -125,6 +131,7 @@ class SafeHarnessLayer:
         self._route_end = None
         self._planned_end = None
         self._contact = None
+        self._contact_plans.clear()
 
     # ---- geometry ----------------------------------------------------------
 
@@ -346,9 +353,11 @@ class SafeHarnessLayer:
         }
 
     def _contact_target(self, xyz) -> dict | None:
-        """The grounded target or place within 3 cm of ``xyz`` horizontally."""
+        """The grounded target or place within 3 cm of ``xyz`` horizontally (not the held object)."""
         xy = np.asarray(xyz, float)[:2]
         for target in self._targets():
+            if target["label"] == self.held:
+                continue
             if _rect_distance(xy, target) <= VLA_HANDOFF:
                 return target
         return None
@@ -394,6 +403,23 @@ class SafeHarnessLayer:
             "approach_from_direction_xy": None if best is None else best[2],
         }
 
+    def _forget_contact_plans(self, previous: dict | None, box: dict) -> None:
+        """Drop adjacency decisions once a box they depend on moved by more than 2 cm."""
+        centre = lambda b: (np.asarray(b["min"]) + np.asarray(b["max"])) / 2  # noqa: E731
+        size = lambda b: np.asarray(b["max"]) - np.asarray(b["min"])  # noqa: E731
+        moved = (
+            previous is None
+            or previous["role"] != box["role"]
+            or np.abs(centre(previous) - centre(box)).max() > ADJACENCY
+            or np.abs(size(previous) - size(box)).max() > ADJACENCY
+        )
+        if not moved:
+            return
+        if box["role"] == "obstacle" or (previous is not None and previous["role"] == "obstacle"):
+            self._contact_plans.clear()
+        else:
+            self._contact_plans.pop(box["label"], None)
+
     def _contact_rule(self, name: str, kwargs: dict) -> tuple[dict | None, dict | None]:
         """Paper adjacency rule at a contact: (refusal, reorientation).
 
@@ -413,8 +439,11 @@ class SafeHarnessLayer:
         if target is None:
             return None, None
         yaw = self._wrist_yaw()
-        approach = self._approach(target, yaw)
+        approach = self._contact_plans.get(target["label"])
         if approach is None:
+            approach = self._approach(target, yaw) or {"adjacent": False}
+            self._contact_plans[target["label"]] = approach
+        if not approach.get("adjacent", True):
             return None, None
         obstacle = approach["obstacle"]
         point = approach["contact_point"]
@@ -546,12 +575,14 @@ class SafeHarnessLayer:
         if len(points) < 10:
             return ToolResult(data={"found": False, "error": "too few depth points"})
         lo, hi = np.percentile(points, 2, axis=0), np.percentile(points, 98, axis=0)
+        previous = self.boxes.get(label)
         self.boxes[label] = {
             "label": label,
             "role": role,
             "min": [round(float(v), 4) for v in lo],
             "max": [round(float(v), 4) for v in hi],
         }
+        self._forget_contact_plans(previous, self.boxes[label])
         score = None if data.score is None else round(float(data.score), 3)
         return ToolResult(data={"found": True, "score": score, **self.boxes[label]})
 
@@ -596,9 +627,13 @@ class SafeHarnessLayer:
         if label not in self.boxes:
             return ToolResult(data={"error": f"unknown label {label}"})
         yaw = self._wrist_yaw()
-        approach = self._approach(self.boxes[label], yaw)
-        report = {"target": label, "wrist_yaw_rad": round(yaw, 3), "adjacent": approach is not None}
-        if approach is not None:
+        approach = self._contact_plans.get(label)
+        if approach is None:
+            approach = self._approach(self.boxes[label], yaw) or {"adjacent": False}
+            self._contact_plans[label] = approach
+        adjacent = approach.get("adjacent", True)
+        report = {"target": label, "wrist_yaw_rad": round(yaw, 3), "adjacent": adjacent}
+        if adjacent:
             report["obstacle"] = approach["obstacle"]["label"]
             report["footprint_gap_m"] = round(approach["footprint_gap_m"], 3)
             if approach["contact_point"] is not None:
