@@ -1,9 +1,0 @@
-Configuration: RPent Planner adapted to LIBERO-Safety.
-suite: human_safety
-flat_task_id: 6
-seed: 0
-flat_task_id is an index inside suite human_safety. It is not a LIBERO-10 task number.
-output_dir: /homeL/dong/Projects/dash-vla-libero/runs/g5_libero/l52b/planner/human_safety_t6_s0
-memory_dir: /homeL/dong/Projects/dash-vla-libero/runs/g5_libero/l52b/memory
-The task sentence comes from view_env_state, field task_language.
-Call view_env_state with step 0 first.

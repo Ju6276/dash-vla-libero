@@ -4,7 +4,8 @@
 set -u
 cd /homeL/dong/Projects/dash-vla-libero
 ROOT=/homeL/dong/Projects/dash-vla-libero
-RUNS="${1:-runs/safelibero/harness/original}"
+RUNS="${1:-runs/p2/original}"
+AUDIT="${2:-runs/p2_audit/original}"
 export SAFELIBERO_ROOT=$ROOT/third_party/vlsa-aegis/safelibero
 export SAFELIBERO_ROBOSUITE_ROOT=$ROOT/third_party/robosuite-stock/robosuite-1.4.1
 export SAFELIBERO_CONFIG_PATH=$ROOT/runs/safelibero/libero_config
@@ -15,14 +16,14 @@ export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export RPENT_REPO_ROOT=$ROOT/vendor/RPent-harness
 export PYTHONPATH="${RPENT_REPO_ROOT}:${SAFELIBERO_ROOT}:${SAFELIBERO_ROBOSUITE_ROOT}"
-GEOMETRY=runs/safelibero/scene_geometry.json
+GEOMETRY=runs/p2/scene_geometry.json
 # Every (suite, seed) the runs used.
 # Run dirs are named <suite>_t<task>_s<seed>.
-CELLS=$(for t in "$RUNS"/*/*/_auditor/safety_trace.json; do
-  name=$(basename "$(dirname "$(dirname "$t")")")
+CELLS=$(for t in "$AUDIT"/*/*/safety_trace.json; do
+  name=$(basename "$(dirname "$t")")
   rest=${name##*_t}
-  echo "${name%_t*}:${rest%%_s*}:${rest##*_s}"
+  echo "${name%_t*}:${rest%%_s*}:${rest##*_s}" | sed 's/^scene_/safelibero_/'
 done | sort -u)
 "$LIBERO_SAFETY_PYTHON" scripts/safelibero/scene_geometry.py --out "$GEOMETRY" $CELLS || exit 1
-"$LIBERO_SAFETY_PYTHON" scripts/safelibero/route_check.py "$RUNS" --geometry "$GEOMETRY" \
+"$LIBERO_SAFETY_PYTHON" scripts/safelibero/route_check.py "$RUNS" --audit "$AUDIT" --geometry "$GEOMETRY" \
   --out "$RUNS/route_check.json"

@@ -64,7 +64,7 @@ MEM="$RUNS/memory_${ARM}${TAG:+_$TAG}"
 if [ ! -d "$MEM" ]; then
   # Published RPent LIBERO memory (RLinf/RPent-memory 47f301ef). RPent's
   # --memory-version auto maps models other than gpt-5.5 / gpt-6-astra to GPT_5.5_xhigh.
-  cp -r "$ROOT/runs/g5_libero/h0_official/memory_gpt55_47f301ef" "$MEM"
+  cp -r "$ROOT/runs/base_memory/memory_gpt55_47f301ef" "$MEM"
 fi
 OUT="$RUNS/${ARM}${TAG:+_$TAG}/${MODE}/${CELL}"
 mkdir -p "$OUT"

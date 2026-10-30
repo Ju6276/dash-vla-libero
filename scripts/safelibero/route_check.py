@@ -134,6 +134,7 @@ def verdict(segment: dict, layer: SafeHarnessLayer) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
+    parser.add_argument("--audit", type=Path, help="AUDIT_ROOT/<mode>/<run>/safety_trace.json")
     parser.add_argument("--geometry", type=Path, required=True)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
@@ -141,6 +142,8 @@ def main() -> None:
     collisions, alarms = [], Counter()
     for run in sorted(args.root.glob("*/*")):
         trace_path = run / "_auditor" / "safety_trace.json"
+        if not trace_path.is_file() and args.audit is not None:
+            trace_path = args.audit / run.parent.name / run.name / "safety_trace.json"
         if not trace_path.is_file():
             continue
         trace = json.loads(trace_path.read_text())
