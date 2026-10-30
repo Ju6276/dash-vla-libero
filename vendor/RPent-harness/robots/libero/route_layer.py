@@ -36,30 +36,36 @@ Added so the rules can run (the paper does not specify them):
     the EEF x-axis and +-10.4 cm along the finger opening axis (EEF y), rotated
     by the wrist yaw and taken as its axis-aligned bound
   - the contact step after a route is a vertical descent that starts at the
-    end pose of a verified route and ends over a grounded target or place; a
+    end pose of a verified route (reached within the 3 cm stall tolerance) and
+    ends within 1 cm of that pose's xy, over a grounded target or place; a
     route may include it as its last segment, and its pre-grasp or release
     pose is then the waypoint before it; "within 3 cm of the target" for the
     VLA is a horizontal test
   - a pi0_pick call ends after the chunk in which its closing gripper settles,
     or once it carries the gripper out of the 3 cm hand-off region; contact
-    skills (pi0_doubled) run as upstream
-  - adjacency directions: 16 headings from the target centre; along each, the
-    contact point is the nearest one (5 mm steps, within the target box) where
-    the footprint is more than 2 cm from every obstacle; of these, the heading
-    pointing farthest away from the obstacle is selected and suggested; a
-    contact is accepted wherever the footprint keeps that clearance (and the
-    gripper is within 3 cm of the target). The decision for a target
-    is kept within a phase, until the gripper picks up or puts down an object
-    or a box moves by more than 2 cm
+    skills (pi0_doubled: knobs, drawers, buttons) run as upstream, since their
+    motion is the contact itself
+  - the adjacency test runs at every contact (pi0_pick / pi0_doubled, a
+    contact descent, and release over a place) at the current wrist yaw.
+    Directions: 16 headings from the target centre; along each, the contact
+    point is the nearest one (5 mm steps, within the target box) where the
+    footprint is more than 2 cm from every obstacle; of these, the heading
+    pointing farthest away from the obstacle is selected. A contact is accepted
+    within 3 cm (the stall tolerance) of the selected point where the footprint
+    keeps clearance. The selected direction is kept within a phase, until the
+    gripper picks up or puts down an object or a box moves by more than 2 cm
   - the tangent turn holds the gripper as it is (open before a grasp); a
     planner target_yaw on that contact motion is replaced by the tangent yaw
   - the held object is the target nearest the gripper after a grasp that ends
-    with the fingers closed on something (opening above 3 mm); it is never a
-    contact target
+    with the fingers closed on something (opening above 3 mm); it is dropped
+    from the check when the fingers open or close empty, and it is never a
+    contact target. A VLA call, a release or a change of the held object ends
+    the phase: its verified route end no longer licenses a contact descent
   - "closer than predicted" allows 2 cm of servo tracking error
   - escape: a segment that starts inside the clearance zone (e.g. the robot's
     initial pose next to a tall obstacle) passes while neither gap shrinks,
-    until it leaves the zone
+    until it leaves the zone; the horizontal gap is signed (negative inside
+    the obstacle footprint), so moving deeper over the obstacle is a shrink
   - grounding as the first step (3.2) is enforced: motion and VLA calls are
     refused until an obstacle is grounded; which object it is stays the
     planner's choice (the paper speaks of the one obstacle and does not say how
@@ -95,7 +101,7 @@ SAMPLE_SPACING = 0.005
 TANGENT_DONE = 0.05  # rad; the wrist counts as already tangent within this
 GRIP_SETTLED = 0.002  # m of finger travel per chunk below which a closing gripper has settled
 HOLDING_OPENING = 0.003  # m; a closed gripper wider than this holds something
-ROUTE_END_TOLERANCE = 0.01  # m; a descent starts at the checked route's end pose
+DESCENT_VERTICAL = 0.01  # m; a contact descent ends this close below the planned pre-grasp xy
 APPROACH_HEADINGS = 16  # candidate approach directions around the contact target
 APPROACH_STEP = 0.005  # m; search step along a heading for the nearest clearing contact point
 MOTION_TOOLS = ("move_to", "move_pose")
@@ -113,6 +119,16 @@ class ContactDone(Exception):
 def _wrap_half_turn(angle: float) -> float:
     """Angle difference modulo pi (the parallel gripper is symmetric under a half turn)."""
     return float((angle + np.pi / 2) % np.pi - np.pi / 2)
+
+
+def _signed_rect_distance(xy, box: dict) -> float:
+    """Horizontal distance from a point to the box footprint; negative depth inside it."""
+    lo, hi = np.asarray(box["min"][:2]), np.asarray(box["max"][:2])
+    xy = np.asarray(xy, float)
+    outside = float(np.linalg.norm(np.maximum(0.0, np.maximum(lo - xy, xy - hi))))
+    if outside > 0.0:
+        return outside
+    return -float(np.min(np.minimum(xy - lo, hi - xy)))
 
 
 def _rect_distance(xy, box: dict) -> float:
@@ -167,7 +183,8 @@ class SafeHarnessLayer:
         held object adds its horizontal radius and its height below the gripper.
         """
         radius, height = self._held_extent()
-        horizontal = max(0.0, _rect_distance(np.asarray(eef[:2], float), obstacle) - radius)
+        # Signed, so the escape rule still sees a gap shrink inside the zone.
+        horizontal = _signed_rect_distance(np.asarray(eef[:2], float), obstacle) - radius
         vertical = float(eef[2]) - GRIPPER_BELOW_EEF - height - float(obstacle["max"][2])
         return horizontal, vertical
 
@@ -187,17 +204,23 @@ class SafeHarnessLayer:
 
     def _is_descent_onto_target(self, start, end) -> bool:
         start, end = np.asarray(start, float), np.asarray(end, float)
-        if np.linalg.norm(end[:2] - start[:2]) > 0.01 or end[2] >= start[2]:
+        if np.linalg.norm(end[:2] - start[:2]) > DESCENT_VERTICAL or end[2] >= start[2]:
             return False
         return self._contact_target(end) is not None
 
     def _is_contact(self, start, end) -> bool:
         """The contact step: a vertical descent from the end pose of a checked route
-        (the pre-grasp or release pose) over a grounded target or place."""
-        start = np.asarray(start, float)
-        if self._route_end is None or np.linalg.norm(start - self._route_end) > ROUTE_END_TOLERANCE:
+        (the pre-grasp or release pose) over a grounded target or place.
+
+        The gripper counts as at that pose within the stall tolerance; the
+        descent is vertical when it ends below the planned pose's xy.
+        """
+        start, end = np.asarray(start, float), np.asarray(end, float)
+        if self._route_end is None or np.linalg.norm(start - self._route_end) > STALL_DISTANCE:
             return False
-        return self._is_descent_onto_target(start, end)
+        if np.linalg.norm(end[:2] - self._route_end[:2]) > DESCENT_VERTICAL or end[2] >= start[2]:
+            return False
+        return self._contact_target(end) is not None
 
     def check_segment(self, start, end, contact: bool | None = None) -> dict:
         """Check a straight segment of the gripper (and held object) against every obstacle."""
@@ -444,15 +467,17 @@ class SafeHarnessLayer:
             self._contact_plans.pop(box["label"], None)
 
     def _contact_rule(self, name: str, kwargs: dict) -> tuple[dict | None, dict | None]:
-        """Paper adjacency rule at a contact: (refusal, reorientation).
+        """Paper adjacency rule at a contact (grasp, contact descent, or release): (refusal, reorientation).
 
-        Not adjacent: any contact. Adjacent with a clearing direction: the contact
-        must be made at that direction's contact point. No clearing direction:
-        the finger opening is turned tangent to the obstacle before a vertical
-        contact.
+        Every contact begins with the adjacency test of the footprint at the
+        contact target, at the current wrist yaw. Not adjacent: any contact.
+        Adjacent with a clearing direction: the contact must be made at that
+        direction's point (within the stall tolerance) where the footprint keeps
+        clearance. No clearing direction: the finger opening is turned tangent
+        to the obstacle and the contact is made vertically.
         """
         eef = np.asarray(self.primitives._last_obs_eef_pos, float)
-        if name in VLA_TOOLS:
+        if name in VLA_TOOLS or name == "release":
             where = eef
         elif name in MOTION_TOOLS and self._is_contact(eef, kwargs["xyz"]):
             where = np.asarray(kwargs["xyz"], float)
@@ -462,33 +487,38 @@ class SafeHarnessLayer:
         if target is None:
             return None, None
         yaw = self._wrist_yaw()
-        approach = self._contact_plans.get(target["label"])
-        if approach is None:
-            approach = self._approach(target, yaw) or {"adjacent": False}
-            self._contact_plans[target["label"]] = approach
-        if not approach.get("adjacent", True):
+        centre = (np.asarray(target["min"][:2]) + np.asarray(target["max"][:2])) / 2
+        if self._adjacent(np.append(centre, target["max"][2]), yaw) is None:
             return None, None
-        obstacle = approach["obstacle"]
-        point = approach["contact_point"]
+        plan = self._contact_plans.get(target["label"])
+        if plan is None:
+            plan = self._approach(target, yaw)
+            if plan is None:
+                return None, None
+            self._contact_plans[target["label"]] = plan
+        obstacle = plan["obstacle"]
+        if plan.get("tangent_yaw") is not None and abs(_wrap_half_turn(yaw - plan["tangent_yaw"])) <= TANGENT_DONE:
+            return None, None  # the fallback was applied for this contact
+        point = plan["contact_point"]
         if point is not None:
-            # A clearing direction exists: the contact must be made where the
-            # footprint keeps clearance; the selected point is the suggestion.
-            if self._adjacent(where, yaw) is None:
+            at_point = np.linalg.norm(where[:2] - point[:2]) <= STALL_DISTANCE
+            if at_point and self._adjacent(where, yaw) is None:
                 return None, None
             return {
                 "error": f"contact at '{target['label']}' is adjacent to obstacle '{obstacle['label']}'",
-                "approach_from_direction_xy": [round(float(v), 3) for v in approach["approach_from_direction_xy"]],
+                "approach_from_direction_xy": [round(float(v), 3) for v in plan["approach_from_direction_xy"]],
                 "contact_point_xy": [round(float(v), 3) for v in point[:2]],
-                "next": "Make the contact from this direction: route to above contact_point_xy, verify it with check_route, then contact there.",
+                "next": "Make the contact at contact_point_xy (approaching from this direction): route to above it, verify the route with check_route, then contact there.",
             }, None
         tangent = self._tangent_yaw(where, obstacle)
+        plan["tangent_yaw"] = tangent
         if abs(_wrap_half_turn(tangent - yaw)) <= TANGENT_DONE:
             return None, None
         # Hold the gripper as it is: open before a grasp, closed over a place.
         turn = self.primitives.rotate_wrist(target_yaw=tangent, gripper=1.0 if self.held else -1.0).data
         return None, {
             "obstacle": obstacle["label"],
-            "footprint_gap_m": round(approach["footprint_gap_m"], 3),
+            "footprint_gap_m": round(plan["footprint_gap_m"], 3),
             "no_clearing_direction": True,
             "target_yaw_rad": round(tangent, 3),
             "converged": turn.get("converged"),
@@ -538,7 +568,7 @@ class SafeHarnessLayer:
                 and not data.get("stalled")
                 and np.linalg.norm(np.asarray(kwargs["xyz"], float) - self._planned_end) < 1e-3
             )
-            self._route_end = np.asarray(self.primitives._last_obs_eef_pos, float) if reached else None
+            self._route_end = self._planned_end if reached else None
             if reached:
                 self._planned_end = None
         opening = float(self.primitives._last_obs_gripper)
@@ -552,10 +582,12 @@ class SafeHarnessLayer:
             self.held = self._nearest_target()
         if name == "release" or (name == "set_gripper" and float(kwargs.get("gripper", -1)) < 0):
             self.held = None
-        if self.held is not None and opening <= HOLDING_OPENING:
-            self.held = None  # the fingers closed on nothing or the object slipped out
+        if self.held is not None and not holding:
+            self.held = None  # fingers open, closed on nothing, or the object slipped out
+        if self.held != held_before or name in VLA_TOOLS or name == "release":
+            # The contact ended the phase: its route and contact decisions expire.
+            self._route_end = self._planned_end = None
         if self.held != held_before:
-            # A new phase (empty or loaded gripper): each contact is tested anew.
             self._contact_plans.clear()
 
     def _nearest_target(self) -> str | None:
@@ -651,7 +683,7 @@ class SafeHarnessLayer:
 
     @tool(readonly=True)
     def contact_check(self, label: str) -> ToolResult:
-        """Adjacency test at a grounded target or place for the current wrist yaw: whether the gripper footprint at it is within 2 cm of an obstacle and, if so, the approach direction that keeps clearance and is farthest from the obstacle, with its contact point. If no direction clears, the harness turns the finger opening tangent to the obstacle itself at the contact, which is then made vertically.
+        """Adjacency test at a grounded target or place for the current wrist yaw (the same test the harness applies at every grasp, contact descent and release): whether the gripper footprint at it is within 2 cm of an obstacle and, if so, the approach direction that keeps clearance and is farthest from the obstacle, with the contact point to use. If no direction clears, the harness turns the finger opening tangent to the obstacle itself at the contact, which is then made vertically.
 
         Args:
             label: Grounded target or place label.
@@ -659,11 +691,15 @@ class SafeHarnessLayer:
         if label not in self.boxes:
             return ToolResult(data={"error": f"unknown label {label}"})
         yaw = self._wrist_yaw()
-        approach = self._contact_plans.get(label)
-        if approach is None:
-            approach = self._approach(self.boxes[label], yaw) or {"adjacent": False}
-            self._contact_plans[label] = approach
-        adjacent = approach.get("adjacent", True)
+        target = self.boxes[label]
+        centre = (np.asarray(target["min"][:2]) + np.asarray(target["max"][:2])) / 2
+        adjacent = self._adjacent(np.append(centre, target["max"][2]), yaw) is not None
+        approach = None
+        if adjacent:
+            approach = self._contact_plans.get(label) or self._approach(target, yaw)
+            if approach is not None:
+                self._contact_plans[label] = approach
+            adjacent = approach is not None
         report = {"target": label, "wrist_yaw_rad": round(yaw, 3), "adjacent": adjacent}
         if adjacent:
             report["obstacle"] = approach["obstacle"]["label"]
