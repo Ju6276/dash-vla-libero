@@ -48,6 +48,14 @@ def base_name(name: str) -> str:
     return re.sub(r"_\d+$", "", name)
 
 
+SIZE_WORDS = {"small", "large", "big", "tiny"}
+
+
+def sam_prompt(name: str) -> str:
+    """``moka_pot_small_1`` -> ``moka pot``: SAM 3 fails on trailing size words."""
+    return " ".join(w for w in base_name(name).split("_") if w not in SIZE_WORDS)
+
+
 def task_named(name: str, language: str) -> bool:
     """The object's noun (last word of its name) appears in the task language."""
     return base_name(name).split("_")[-1] in words(language)
@@ -89,7 +97,7 @@ def main() -> None:
         for name in scene["objects"]:
             if task_named(name, scene["language"]):
                 continue
-            prompt = base_name(name).replace("_", " ")
+            prompt = sam_prompt(name)
             result = sam.segment(image_b64, text_prompt=prompt, min_score=0.2)
             box = None
             if result.get("found"):
