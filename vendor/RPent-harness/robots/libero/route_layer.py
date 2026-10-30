@@ -34,7 +34,9 @@ Added so the rules can run (the paper does not specify them):
     gripper or held-object point and the obstacle top. A motion that turns the
     wrist is checked at yaws sampled along the turn
   - the contact step after a route is a vertical descent that starts at the
-    end pose of a verified route and ends over a grounded target or place;
+    end pose of a verified route and ends over a grounded target or place; a
+    route may include it as its last segment, and its pre-grasp or release
+    pose is then the waypoint before it;
     "within 3 cm of the target" for the VLA is a horizontal test
   - a VLA call ends after the chunk in which its closing gripper settles, or
     once it carries the gripper out of the 3 cm hand-off region
@@ -163,22 +165,27 @@ class SafeHarnessLayer:
         horizontal, vertical = self.separation(eef, obstacle, yaws)
         return horizontal >= HORIZONTAL_CLEARANCE or vertical >= VERTICAL_CLEARANCE
 
-    def _is_contact(self, start, end) -> bool:
-        """The contact step: a vertical descent from the end pose of a checked route
-        (the pre-grasp or release pose) over a grounded target or place."""
+    def _is_descent_onto_target(self, start, end) -> bool:
         start, end = np.asarray(start, float), np.asarray(end, float)
-        if self._route_end is None or np.linalg.norm(start - self._route_end) > ROUTE_END_TOLERANCE:
-            return False
         if np.linalg.norm(end[:2] - start[:2]) > 0.01 or end[2] >= start[2]:
             return False
         return self._contact_target(end) is not None
 
-    def check_segment(self, start, end, yaws=None) -> dict:
+    def _is_contact(self, start, end) -> bool:
+        """The contact step: a vertical descent from the end pose of a checked route
+        (the pre-grasp or release pose) over a grounded target or place."""
+        start = np.asarray(start, float)
+        if self._route_end is None or np.linalg.norm(start - self._route_end) > ROUTE_END_TOLERANCE:
+            return False
+        return self._is_descent_onto_target(start, end)
+
+    def check_segment(self, start, end, yaws=None, contact: bool | None = None) -> dict:
         """Check a straight segment; ``yaws`` are the wrist yaws it may take (default: current)."""
         start, end = np.asarray(start, float), np.asarray(end, float)
         if yaws is None:
             yaws = (self._wrist_yaw(),)
-        contact = self._is_contact(start, end)
+        if contact is None:
+            contact = self._is_contact(start, end)
         n = max(2, int(np.linalg.norm(end - start) / SAMPLE_SPACING) + 1)
         # Escape: a segment that starts inside the clearance zone may stay in
         # it while neither gap shrinks, until it leaves the zone.
@@ -558,13 +565,19 @@ class SafeHarnessLayer:
         Args:
             waypoints: List of [x, y, z] waypoints, in execution order.
         """
-        start = self.primitives._last_obs_eef_pos
+        start = np.asarray(self.primitives._last_obs_eef_pos, float)
+        points = [start, *(np.asarray(w, float) for w in waypoints)]
+        # A final vertical descent onto a grounded target or place is the contact
+        # step below the pre-grasp or release pose (the point before it).
+        contact_last = len(points) > 2 and self._is_descent_onto_target(points[-2], points[-1])
         segments = []
-        for waypoint in waypoints:
-            segments.append({"to": waypoint, **self.check_segment(start, waypoint)})
-            start = waypoint
+        for index, waypoint in enumerate(waypoints):
+            last = index == len(waypoints) - 1
+            contact = True if (last and contact_last) else None
+            segments.append({"to": waypoint, **self.check_segment(points[index], waypoint, contact=contact)})
         route_ok = all(s["ok"] for s in segments)
-        self._planned_end = np.asarray(waypoints[-1], float) if route_ok else None
+        end = points[-2] if contact_last else points[-1]
+        self._planned_end = end if route_ok else None
         return ToolResult(
             data={
                 "route_ok": route_ok,
