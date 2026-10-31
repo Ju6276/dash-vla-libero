@@ -191,6 +191,12 @@ class LiberoEnvFacade(BaseEnvFacade):
             methods["env.scene_snapshot"] = self.scene_snapshot
             self._readonly_methods.add("env.safety_trace")
             self._readonly_methods.add("env.scene_snapshot")
+        # DASH-VLA safety filter: the harness marks the objects it means to touch.
+        if getattr(self._env, "cbf", None) is not None:
+            methods["env.cbf_mark"] = self.cbf_mark
+            methods["env.cbf_unmark"] = self.cbf_unmark
+            methods["env.cbf_hold"] = self.cbf_hold
+            methods["env.cbf_stats"] = self.cbf_stats
         self._rpc.update(methods)
         self._readonly_methods.add("env.get_task_language")
 
@@ -270,6 +276,24 @@ class LiberoEnvFacade(BaseEnvFacade):
 
     def safety_trace(self) -> dict:
         return self._env.safety_trace()
+
+    def cbf_mark(self, label: str, lo, hi) -> None:
+        self._env.cbf.set_exempt(str(label), lo, hi)
+
+    def cbf_unmark(self, label: str) -> None:
+        self._env.cbf.clear_exempt(str(label))
+
+    def cbf_hold(self, label: str | None) -> None:
+        self._env.cbf.set_held(label)
+
+    def cbf_stats(self, reset: bool = False) -> dict:
+        cbf = self._env.cbf
+        stats = dict(cbf.stats)
+        stats["blocked_now"] = bool(cbf.blocked())
+        stats["held"] = None if cbf.held is None else cbf.held["label"]
+        if reset:
+            cbf.reset_stats()
+        return to_numpy_tree(stats)
 
     def scene_snapshot(self) -> dict:
         return self._env.scene_snapshot()

@@ -1,6 +1,6 @@
 # DASH-VLA 当前状态
 
-更新：2026-10-30。机器：tamsgpu8，RTX 4090，设备 0，项目在 `/homeL/dong/Projects/dash-vla-libero`。
+更新：2026-11-01。机器：tamsgpu8，RTX 4090，设备 0，项目在 `/homeL/dong/Projects/dash-vla-libero`。
 
 ## 研究问题
 
@@ -14,7 +14,15 @@ Motivation 必须来自**不做修改的原始 Harness** 在**第三方公开 Be
 - SafeLIBERO 预实验（2026-10-28 至 10-30 的 B0、B1、B2 试点）：规划器能看到 SafeLIBERO 名称、`_auditor` 提示和带 `obstacle` 的物体名。数字不作为证据，数据已删除。
 - p2 第一次尝试（10-30 凌晨至下午，10 个回合）：评估阶段读不到任务记忆，代码版本不一致，B2 是早期版本。数据移到项目外的 `/homeL/dong/dash_archive/`，原因见 `04_b2_reproduction.md`。
 
-## 当前进度（2026-10-30 晚，暂停）
+## 当前进度（2026-11-01）
+
+- 方法方向：不写诊断类文章，做"规划器 + VLA + CBF + 记忆"的方法。
+- 第一轮（`07_cbf_round.md`）：自研的深度点云 CBF 接进 Harness。无碰撞 14/16，没有达到预设目标；记忆没有可见作用。已知缺陷：只约束平移，日志里的部位标签无法区分。暂停开发。
+- 第二轮（`08_aegis_cbf_harness.md`）：AEGIS 原版 CBF 放进 Harness，加上反馈和记忆。H+M 的 SSR@900 是 14/16，是目前各组最好的；记忆让无碰撞从 13/16 提到 15/16。完全不碰撞的只有 B2（16/16）。按官方步数算，仍是 AEGIS 最好。
+- 步数口径（`09_step_budget.md`）：SafeHarness 用 900 步，但它的基线数字照抄 AEGIS 的 300 / 550 步结果。我们之前统计的官方步数少算了 20 步，已更正。正在用 900 步重跑 A、AEGIS-SFT，以及官方 π0.5 版的 AEGIS。
+- 额度：TAMS 周用量约 75%。
+
+## 2026-10-30 的进度
 
 - 正式轮 p2 已完成，64 个回合全部跑完。结果和 G1–G4 判定见 `02_safelibero_motivation.md`，每个回合的数据在 `reports/data/p2/`。
   - G1、G2 满足。

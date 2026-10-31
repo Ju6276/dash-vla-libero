@@ -3,10 +3,10 @@
 
 Same checkpoint, VLA server, client and env adapter the Harness uses. No
 planner, no perception, no memory, no analytic primitives: the official task
-sentence goes to ``full_task_vla`` until the scene terminates or the official
-step budget is spent (300, or 550 for LIBERO-10, counting the 20 wait steps
-as the official loop does, so 280 / 530 control steps). Collision follows the
-SafeLIBERO rule computed in the env process.
+sentence goes to ``full_task_vla`` until the scene terminates or the step
+budget is spent: the official 300 / 550 control steps (main_aegis.py does not
+count the 20 wait steps; runs before 2026-11-01 used 280 / 530), or
+--max-steps. Collision follows the SafeLIBERO rule computed in the env process.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from rpent.utils.daemon import ProcessDaemon, pick_free_port
 from rpent.utils.rpc.client_utils import wait_for_ready
 from rpent.utils.rpc.http_rpc import HttpRpcClient
 from robots.libero.env_client import LiberoEnvClient
-from robots.libero.scene_env import OFFICIAL_MAX_STEPS, OFFICIAL_WAIT_STEPS
+from robots.libero.scene_env import OFFICIAL_MAX_STEPS
 from robots.libero.tools import LiberoPrimitives
 
 ROOT = Path(os.environ["RPENT_REPO_ROOT"])
@@ -54,9 +54,9 @@ def env_overrides() -> dict[str, str]:
     }
 
 
-def run_episode(model, suite: str, task: int, episode: int, out: Path) -> dict:
+def run_episode(model, suite: str, task: int, episode: int, out: Path, max_steps: int | None) -> dict:
     base = suite.rsplit("_", 1)[0].replace("safelibero_", "")
-    budget = OFFICIAL_MAX_STEPS[base] - OFFICIAL_WAIT_STEPS
+    budget = max_steps or OFFICIAL_MAX_STEPS[base]
     row: dict = {"suite": suite, "task": task, "episode": episode, "budget_steps": budget}
     started = time.time()
     env_cmd = [
@@ -128,6 +128,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--cells", nargs="+", required=True, help="suite:task, e.g. safelibero_goal_I:0")
     parser.add_argument("--episodes", type=int, nargs="+", default=[0, 1, 2])
+    parser.add_argument("--max-steps", type=int, default=None, help="control-step budget (default: official)")
     args = parser.parse_args()
     out = args.output_dir
     out.mkdir(parents=True, exist_ok=True)
@@ -167,7 +168,7 @@ def main() -> None:
             for episode in args.episodes:
                 if (suite, int(task), episode) in done:
                     continue
-                row = run_episode(model, suite, int(task), episode, out)
+                row = run_episode(model, suite, int(task), episode, out, args.max_steps)
                 with results.open("a") as handle:
                     handle.write(json.dumps(row) + "\n")
                 print(

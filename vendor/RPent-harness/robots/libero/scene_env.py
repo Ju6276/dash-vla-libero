@@ -43,8 +43,8 @@ SAFELIBERO_SUITES = tuple(
 OFFICIAL_ENV_SEED = 7
 OFFICIAL_WAIT_STEPS = 20
 DISPLACEMENT_THRESHOLD = 0.001
-# Official per-suite step budgets, reported as a secondary success cut. The
-# official loop counts the wait steps in them, so the control budget is 20 less.
+# Official per-suite control-step budgets, reported as a secondary success cut.
+# main_aegis.py resets t to 0 after the wait steps, so they are not counted.
 OFFICIAL_MAX_STEPS = {"spatial": 300, "object": 300, "goal": 300, "long": 550}
 
 
@@ -173,9 +173,7 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
         self.audit = bool(audit)
         self.init_bank_size = int(len(self._init_bank))
         self.max_episode_steps = int(max_episode_steps)
-        self.official_max_steps = (
-            OFFICIAL_MAX_STEPS[base.replace("safelibero_", "")] - OFFICIAL_WAIT_STEPS
-        )
+        self.official_max_steps = OFFICIAL_MAX_STEPS[base.replace("safelibero_", "")]
         sim_kwargs = {
             "bddl_file_name": str(bddl),
             "camera_heights": 256,
@@ -189,6 +187,19 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
         self._sim = OffScreenRenderEnv(**sim_kwargs)
         self._sim.seed(OFFICIAL_ENV_SEED)
         self.env = _Closer(self)
+        # Safety filter on every control action: the depth-point-cloud CBF
+        # (RPENT_CBF=1) or AEGIS's ellipsoid CBF (RPENT_CBF=aegis).
+        self.cbf = None
+        self._resets = 0
+        arm = self._sim.env.robot_configs[0]["controller_config"]
+        if os.environ.get("RPENT_CBF") == "1":
+            from robots.libero.cbf_filter import DepthCbf
+
+            self.cbf = DepthCbf(self._mujoco_sim(), float(arm["output_max"][0]))
+        elif os.environ.get("RPENT_CBF") == "aegis":
+            from robots.libero.aegis_cbf import AegisCbf
+
+            self.cbf = AegisCbf(self._mujoco_sim(), float(arm["output_max"][0]))
         self.obstacle_name: str | None = None
         self.obstacle_start = None
         self.collided = False
@@ -228,6 +239,9 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
         self.max_displacement = 0.0
         self.success_step = None
         self._sim.reset()
+        if self.cbf is not None:
+            self.cbf.bind(self._mujoco_sim())
+            self.cbf.reset_episode()
         index = self.seed % len(self._init_bank)
         raw = self._sim.set_init_state(np.asarray(self._init_bank[index], dtype=np.float64))
         wait = np.zeros(7, dtype=np.float32)
@@ -235,6 +249,11 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
         for _ in range(OFFICIAL_WAIT_STEPS):
             raw = self._consume(wait, count_control=False)[0]
             self.settle_steps += 1
+        if hasattr(self.cbf, "perceive"):
+            self._resets += 1
+            log = os.environ.get("RPENT_CBF_LOG")
+            work = Path(log).parent if log else Path(os.environ.get("TMPDIR", "/tmp"))
+            self.cbf.perceive(raw, self.language, self.base_suite, work / "aegis" / f"pid{os.getpid()}_reset{self._resets}")
         self.obstacle_name = self._active_obstacle(raw)
         self.obstacle_start = (
             np.asarray(raw[f"{self.obstacle_name}_pos"], dtype=np.float64).copy()
@@ -273,9 +292,13 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
         return view
 
     def _consume(self, action: np.ndarray, *, count_control: bool):
+        if count_control and self.cbf is not None:
+            action = self.cbf.filter(action)
         raw, reward, terminated, truncated, info = super()._consume(
             action, count_control=count_control
         )
+        if hasattr(self.cbf, "observe"):
+            self.cbf.observe(raw)
         if count_control and self.terminated and self.success_step is None:
             self.success_step = self.steps
         return raw, reward, terminated, truncated, info
@@ -403,6 +426,8 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
             "eef_end": self.eef_end,
             "step_audits": [r for r in self.step_audits if any(r["audited_cost"].values())],
             "audited_positive_steps": self.positive_steps,
+            "cbf": None if self.cbf is None else dict(self.cbf.totals),
+            "aegis_obstacle": getattr(self.cbf, "obstacle", None),
         }
 
     def close(self) -> None:

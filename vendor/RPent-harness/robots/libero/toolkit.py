@@ -105,15 +105,29 @@ class LiberoToolkit(Toolkit):
                     else definition
                 )
                 self.add_tool(definition.with_handler(handler))
+        # DASH-VLA safety filter: object marking, blocked motions, intervention log.
+        self._cbf = None
+        if os.environ.get("RPENT_CBF") in ("1", "aegis"):
+            from robots.libero.cbf_layer import CbfLayer
+
+            self._cbf = CbfLayer(self._primitives)
+            # AEGIS's filter protects one named obstacle: nothing to mark.
+            for definition in iter_tools(self._cbf) if self._cbf.marking else ():
+                handler = (
+                    partial(definition, state=self._state)
+                    if definition.name == "mark_object"
+                    else definition
+                )
+                self.add_tool(definition.with_handler(handler))
         for definition in iter_tools(self._primitives):
             if definition.name == "segment":
                 handler = partial(definition, state=self._state)
             else:
-                inner = (
-                    self._safeharness.gate(definition.name, definition)
-                    if self._safeharness is not None
-                    else definition
-                )
+                inner = definition
+                if self._safeharness is not None:
+                    inner = self._safeharness.gate(definition.name, inner)
+                if self._cbf is not None:
+                    inner = self._cbf.gate(definition.name, inner)
                 handler = partial(self._execute_primitive, definition.name, inner)
             self.add_tool(definition.with_handler(handler))
         if self._mode == "exploration":
@@ -165,6 +179,8 @@ class LiberoToolkit(Toolkit):
         result = self._primitives.reset_episode(reason=reason)
         if self._safeharness is not None:
             self._safeharness.clear()
+        if self._cbf is not None:
+            self._cbf.clear()
         result["attempt"] = self._attempt
         result["notice"] = (
             f"Episode restarted; this is attempt {self._attempt}. The original "

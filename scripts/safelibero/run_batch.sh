@@ -31,6 +31,9 @@ EXPLORE_SEED="${SL_EXPLORE_SEED:-0}"
 EXPLORE="${SL_EXPLORE:-1}"
 CODEX_DIR="${SL_CODEX_HOME:-/homeL/dong/.codex}"
 BUDGET_STOP="${SL_BUDGET_STOP:-}"
+# runs/budget_stop, when present, overrides the limit for batches started after it is written.
+BUDGET_FILE=/homeL/dong/Projects/dash-vla-libero/runs/budget_stop
+[ -n "$BUDGET_STOP" ] && [ -s "$BUDGET_FILE" ] && BUDGET_STOP="$(cat "$BUDGET_FILE")"
 weekly_used() {  # weekly used_percent from the newest Codex session log, or -1
   python3 - "$CODEX_DIR/sessions" <<'PY'
 import json, sys
