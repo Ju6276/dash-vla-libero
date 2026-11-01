@@ -1,83 +1,102 @@
 # DASH-VLA 当前状态
 
-更新：2026-11-01。机器：tamsgpu8，RTX 4090，设备 0，项目在 `/homeL/dong/Projects/dash-vla-libero`。
+更新：2026-11-01 晚。机器：tamsgpu8，RTX 4090，设备 0，项目在 `/homeL/dong/Projects/dash-vla-libero`。
 
 ## 研究问题
 
-不重训底层 VLA，在已有 Harness VLA（RPent，arXiv 2607.08448）上加入物理安全模块，让它在 SafeLIBERO 上不碰撞障碍物，同时保持任务完成率。
+不重训 VLA，让 Harness VLA（RPent，arXiv 2607.08448）在有障碍物的场景里安全地完成任务。文章类型是方法文章。
 
-文章类型：方法文章，不做诊断类文章。方法是"规划器 + VLA + CBF + 带安全记录的记忆"。
+**当前的论证思路**（待基线确认）：
+
+- VLA + CBF（AEGIS）只能完成 VLA 学过的任务；
+- 规划器（Harness）能泛化到新指令，但不保证安全；
+- 我们要让两者同时成立。
+
+## 已经确定的事
+
+1. **原 SafeLIBERO task 0 区分不了方法**（报告 08–10、12）。VLA 学过这些任务，AEGIS-SFT 两次运行都是 14/16。规划器类的方法慢，波动有 3 个回合；900 步内没有超过 AEGIS。不限步数时，SafeHarness 是 16/16。
+2. **新指令上 AEGIS 做不成任务**（报告 14）。6 条不在 LIBERO-130 里的指令，48 个回合，成功 7/48，撞 20/48。
+3. **碰撞几乎都来自手臂，不是夹爪**（报告 13）。r2 和开发轮里有逐步记录的 17 次碰撞，16 次是 link5 / link6。只保护夹爪的 CBF 挡不住这类碰撞。
+
+## 下一步（只做这一件）
+
+在新指令的同样 48 个回合上，跑两组带规划器的基线。代码和方法都不改：
+
+| 组 | 内容 |
+|---|---|
+| B0 | 原版 Harness VLA（规划器 + VLA） |
+| B2 | SafeHarness，冻结在 v7 |
+
+看两件事：
+
+- 任务成功率是否明显高于 AEGIS 的 7/48；
+- 各撞了多少次，撞在哪里。
+
+**额度**：每组约 10%，两组约 20%。现在 TAMS 周用量 95%，下次重置是 2026-11-04 09:04（或者用重置卡）。
+
+等这一步的结果出来，再决定方法要改哪一个部分，一次只改一个。
+
+## 已停止或冻结
+
+| 内容 | 状态 | 报告 |
+|---|---|---|
+| 交给 VLA 前的安全检查、相对障碍物的记忆 | 没有效果，已停止 | 12 |
+| 连杆（link5 / link6）CBF 约束 | 冻结，代码保留，默认关闭（`SL_CBF_LINKS`）。实测的"5 次碰撞减到 1 次"用的是有 bug 的第一版；修正版只做过离线测试 | 13 |
+| 重复运行 r3 | 中途停止；AEGIS-SFT 的 16 个回合已完成，H、H+M 只跑了一部分 | 12 |
+| 自研深度点云 CBF | 暂停 | 07 |
 
 ## 报告索引
 
 | 报告 | 内容 |
 |---|---|
-| `02_safelibero_motivation.md` | p2 正式轮：B0、B1、B2 的结果，G1–G4 判定 |
+| `02_safelibero_motivation.md` | B0、B1、B2 正式轮 |
 | `03_dash_offline.md` | 离线模块验证 |
-| `04_b2_reproduction.md` | B2（SafeHarness）复现，冻结在 v7 |
-| `05_memory_control.md` | 记忆对照：否定"记忆污染"，发现带障碍物标注的记忆有效 |
-| `06_related_work_memory.md` | 记忆相关工作 |
-| `07_cbf_round.md` | 第一轮：自研深度点云 CBF，暂停开发 |
-| `08_aegis_cbf_harness.md` | 第二轮：AEGIS 原版 CBF + 规划器 + 反馈 + 记忆（H、H+M） |
-| `09_step_budget.md` | 各论文的步数口径；A、AEGIS 在 900 步下重跑；官方 π0.5 对比 SFT 版 |
-| `10_memory_ablation.md` | 记忆消融：H+E（只有探索笔记） |
-| `11_cbf_signal.md` | 离线分析：过滤器干预不能提前预示碰撞，抓取起点的几何关系可以 |
-| `12_handoff_check.md` | 交给 VLA 前的安全检查和相对障碍物的记忆：没有效果；r2 重复运行的波动 |
-| `13_link_contacts.md` | 碰撞部位：17 次里 16 次是 link5 / link6；给这两根连杆加 CBF 约束，实测 5 次碰撞减到 1 次 |
-| `14_new_instructions.md` | 6 条新指令上的 AEGIS-SFT：成功 7/48，碰撞 20/48 |
+| `04_b2_reproduction.md` | SafeHarness（B2）复现，冻结在 v7 |
+| `05_memory_control.md`、`06_related_work_memory.md` | 记忆对照、相关工作 |
+| `07_cbf_round.md` | 自研深度点云 CBF（暂停） |
+| `08_aegis_cbf_harness.md` | AEGIS CBF + 规划器 + 反馈 + 记忆（H、H+M） |
+| `09_step_budget.md` | 步数口径；A、AEGIS 的 900 步结果；官方 π0.5 对比 SFT 版 |
+| `10_memory_ablation.md` | 记忆消融（H+E） |
+| `11_cbf_signal.md` | 离线：过滤器干预能不能预示碰撞 |
+| `12_handoff_check.md` | 交接检查（无效）；r2 重复运行的波动 |
+| `13_link_contacts.md` | 碰撞部位分析；连杆约束（冻结） |
+| `14_new_instructions.md` | 新指令上的 AEGIS-SFT |
 
-每组的逐回合数据：`data/p2/`（B0、B1、B2），`data/cbf/`（第一、二轮和消融，以及 A、AEGIS 的 900 步结果）。
+逐回合数据：`data/p2/`（B0、B1、B2），`data/cbf/`（H 系列、A、AEGIS）。新指令的结果在服务器上：`runs/newinstr/aegis_sft_900/`。
 
-## 汇总结果
+## task 0 上的汇总（16 个回合：8 个场景 × episode 1、2）
 
-都是同样的 16 个评估回合：8 个场景，各取 task 0 的 episode 1、2。VLA 默认是 RLinf-Pi05-LIBERO-130-fullshot-SFT。
+| 组 | TSR | CAR | SSR | SSR@900 | 官方步数内 SSR |
+|---|---|---|---|---|---|
+| A-SFT（只有 VLA，900 步） | 13 | 3 | 3 | 3 | 3 |
+| AEGIS-官方 π0.5（900 步） | 15 | 12 | 12 | 12 | 12 |
+| AEGIS-SFT（900 步，r1 / r2） | 15 | 15 | 14 | 14 / 14 | 12 |
+| B0 原版 Harness | 16 | 11 | 11 | 10 | 2 |
+| B1 B0 + 安全提示 | — | — | — | 13 | 2 |
+| B2 SafeHarness | 16 | 16 | 16 | 12 | 2 |
+| H（r1 / r2） | 16 / 15 | 13 / 12 | 13 / 12 | 12 / 9 | 3 / 3 |
+| H+E | 16 | 13 | 13 | 13 | 4 |
+| H+M（r1 / r2） | 16 / 14 | 15 / 13 | 15 / 13 | 14 / 11 | 3 / 1 |
 
-| 组 | 内容 | TSR | CAR | SSR | SSR@900 | 官方步数内 SSR | 报告 |
-|---|---|---|---|---|---|---|---|
-| A-SFT | 只有 VLA，900 步 | 13 | 3 | 3 | 3 | 3 | 09 |
-| AEGIS-官方 | 官方 π0.5 + AEGIS CBF，900 步 | 15 | 12 | 12 | 12 | 12 | 09 |
-| AEGIS-SFT | SFT 版 VLA + AEGIS CBF，900 步 | 15 | 15 | 14 | 14 | 12 | 09 |
-| B0 | 原版 Harness | 16 | 11 | 11 | 10 | 2 | 02、08 |
-| B1 | B0 + 安全提示 | — | — | — | 13 | 2 | 02、09 |
-| B2 | SafeHarness 复现 | 16 | 16 | 16 | 12 | 2 | 04、08 |
-| H | Harness + AEGIS CBF + 反馈 | 16 | 13 | 13 | 12 | 3 | 08 |
-| H+E | H + 探索笔记 | 16 | 13 | 13 | 13 | 4 | 10 |
-| H+M | H + 探索笔记 + CBF 记录 | 16 | 15 | 15 | 14 | 3 | 08 |
-
-A、AEGIS 两组的上限是 900 步，所以它们的 TSR、CAR、SSR 也是 900 步内的结果。官方步数是 300 / 550 个控制步，开局 20 个等待步不计入。
-
-- **不限步数**：B2 最好（16/16）。
-- **900 步**：H+M 和 AEGIS-SFT 并列（14/16）。
-- **官方步数**：AEGIS 最好（12/16）；规划器类的组太慢，只有 2 到 4/16。
-- **记忆**：H+E 和 H 一样，H+M 高 2 个回合，差别在 long_I。提升来自 CBF 记录（报告 10）。
-- **碰撞**：r1 里 H、H+E、H+M 的碰撞都发生在 VLA 抓取（`pi0_pick`）中；r2 和开发轮里，规划器搬运物体时也有碰撞。接触部位几乎都是手腕和前臂（link6、link5），不是夹爪（报告 13）。
-- 重复运行 r2（报告 12）：AEGIS-SFT 两次都是 14/16。H、H+M 在 900 步内各掉 3 个回合，SSR 分别是 13→12、15→13。r2 有 3 次碰撞发生在规划器移动拿着的物体时。
-
-## 下一步（待定）
-
-1. H+M、H+E、AEGIS-SFT 各重复 2 到 3 遍，确认 14/16 对 14/16、15/16 对 13/16 是否稳定。
-2. 针对抓取阶段的碰撞改进方法：保护手臂连杆，或者把记忆里的教训转成抓取前的接近约束。
-3. 跨场景迁移：记忆来自同场景 episode 0，需要测换场景后是否仍有效。
-4. 第二个基准（ResponsibleRobo benchmark）：待确认仿真器、机器人和数据。
+规划器类的组，同一配置两次运行能差 3 个回合，差一两个回合不能算差别。
 
 ## 已作废的工作
 
-- LIBERO-Safety 阶段：环境自带的 robosuite 改过控制器，结论全部作废，代码和数据已删除（git 历史可查）。
-- SafeLIBERO 预实验（10-28 至 10-30）：规划器能看到基准名称和带 `obstacle` 的物体名，数据已删除。
-- p2 第一次尝试（10-30）：评估读不到任务记忆，存档在 `/homeL/dong/dash_archive/`（`04_b2_reproduction.md`）。
-- 第二轮第一次启动（10-31）：GroundingDINO 找不到文本模型，存档在 `/homeL/dong/dash_archive/aegiscbf_failed_hfhome/`。
-- 已更正：官方步数之前少算了 20 步，B0、B2 的官方步数结果没有排除碰撞（报告 08、09）。
+- LIBERO-Safety 阶段：控制器被改过，结论全部作废。
+- SafeLIBERO 预实验（10-28 至 10-30）：规划器能看到基准名称。
+- p2 第一次尝试（10-30）、第二轮第一次启动（10-31）：都是基础设施故障，存档在 `/homeL/dong/dash_archive/`。
 
-## 相关工作的约束
+## 相关工作
 
-- SafeHarness（arXiv 2609.20822）：同样的冻结 π0.5，在 SafeLIBERO 上用包围盒验证路线，900 步。它的基线数字照抄 AEGIS 的 300 / 550 步结果。
+- SafeHarness（arXiv 2609.20822）：冻结的 π0.5，在 SafeLIBERO 上用包围盒检查路线，900 步。它的基线数字照抄 AEGIS 的 300 / 550 步结果。
 - AEGIS / VLSA（arXiv 2512.11891）：VLA + 末端椭球 CBF，300 / 550 步。
 
 ## 固定协议
 
-- 权重：`RLinf-Pi05-LIBERO-130-fullshot-SFT`，RPent LIBERO 预设（每次推理执行 5 个动作）。AEGIS-官方组用 openpi `pi05_libero`。
-- 规划器和障碍物命名：`gpt-6.1-sol`，reasoning `low`，所有组一致。
-- 原始 Harness：工具表、提示、记忆机制和运行参数与上游 RPent 一致。B2 冻结在 v7（标签 `b2-final`）。
-- 记忆：从官方 RPent 记忆（`47f301ef`，`runs/base_memory/`）开始。
-- 规划器看不到任何基准名称或安全评测信息；碰撞判定只在环境进程里计算。
-- 额度：TAMS 周用量约 80%（2026-11-01 01:30）。
+- **VLA 权重**：`RLinf-Pi05-LIBERO-130-fullshot-SFT`，每次推理执行 5 个动作。AEGIS-官方组用 openpi `pi05_libero`。
+- **规划器和障碍物命名**：`gpt-6.1-sol`，reasoning `low`，所有组一致。
+- **原版 Harness 与 B2**：与上游 RPent 一致；B2 冻结在 v7（标签 `b2-final`）。
+- **记忆**：从官方 RPent 记忆（`47f301ef`）开始。
+- **规划器能看到的信息**：看不到基准名称和安全评测信息。碰撞判定只在环境进程里计算。
+- **新指令**：用 `SL_VARIANT=<名字>` 加载（`runs/newinstr/bddl/variants.json`）。只改语言指令和成功条件。
+- **做实验的规矩**：一次只改一个部分；先在新设置上跑基线，再考虑改方法。
