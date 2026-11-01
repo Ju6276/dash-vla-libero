@@ -23,7 +23,8 @@
 | `10_memory_ablation.md` | 记忆消融：H+E（只有探索笔记） |
 | `11_cbf_signal.md` | 离线分析：过滤器干预不能提前预示碰撞，抓取起点的几何关系可以 |
 | `12_handoff_check.md` | 交给 VLA 前的安全检查和相对障碍物的记忆：没有效果；r2 重复运行的波动 |
-| `13_link_contacts.md` | 碰撞部位：17 次里 16 次是 link5 / link6；给这两根连杆加 CBF 约束 |
+| `13_link_contacts.md` | 碰撞部位：17 次里 16 次是 link5 / link6；给这两根连杆加 CBF 约束，实测 5 次碰撞减到 1 次 |
+| `14_new_instructions.md` | 6 条新指令上的 AEGIS-SFT：成功 7/48，碰撞 20/48 |
 
 每组的逐回合数据：`data/p2/`（B0、B1、B2），`data/cbf/`（第一、二轮和消融，以及 A、AEGIS 的 900 步结果）。
 
