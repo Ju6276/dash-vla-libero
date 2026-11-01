@@ -17,7 +17,13 @@ batch() {  # env assignments for run_batch.sh, retried on usage limits
   while true; do
     env "$@" SL_TASKS=0 scripts/safelibero/run_batch.sh
     code=$?
-    [ $code -eq 76 ] && { echo "ROUND BUDGET STOP $(date -Is)"; exit 76; }
+    if [ $code -eq 76 ]; then
+      # SL_BUDGET_RESUME=1: wait for the quota to come back (a reset) instead of stopping
+      [ "${SL_BUDGET_RESUME:-0}" = 1 ] || { echo "ROUND BUDGET STOP $(date -Is)"; exit 76; }
+      echo "BUDGET PAUSE ${WAIT}s $* $(date -Is)"
+      sleep "$WAIT"
+      continue
+    fi
     [ $code -ne 75 ] && return
     echo "QUOTA WAIT ${WAIT}s $* $(date -Is)"
     sleep "$WAIT"

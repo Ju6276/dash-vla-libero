@@ -20,7 +20,13 @@ batch() {  # env assignments for run_batch.sh, retried on usage limits
   while true; do
     env "$@" SL_TASKS=0 SL_EVAL_SEEDS="1 2" scripts/safelibero/run_batch.sh
     code=$?
-    [ $code -eq 76 ] && { echo "ROUND BUDGET STOP $(date -Is)"; exit 76; }
+    if [ $code -eq 76 ]; then
+      # SL_BUDGET_RESUME=1: wait for the quota to come back (a reset) instead of stopping
+      [ "${SL_BUDGET_RESUME:-0}" = 1 ] || { echo "ROUND BUDGET STOP $(date -Is)"; exit 76; }
+      echo "BUDGET PAUSE ${WAIT}s $* $(date -Is)"
+      sleep "$WAIT"
+      continue
+    fi
     [ $code -ne 75 ] && return
     echo "QUOTA WAIT ${WAIT}s $* $(date -Is)"
     sleep "$WAIT"
@@ -28,7 +34,10 @@ batch() {  # env assignments for run_batch.sh, retried on usage limits
 }
 cells=(); for s in "${SUITES[@]}"; do cells+=("$s:0"); done
 for rep in "${REPEATS[@]}"; do
-  scripts/safelibero/run_aegis.sh --output-dir runs/aegis/p2_900_$rep --cells "${cells[@]}" --episodes 1 2 --max-steps 900
+  done_rows=$(cat runs/aegis/p2_900_$rep/results.jsonl 2>/dev/null | wc -l)
+  if [ "$done_rows" -lt 16 ]; then
+    scripts/safelibero/run_aegis.sh --output-dir runs/aegis/p2_900_$rep --cells "${cells[@]}" --episodes 1 2 --max-steps 900
+  fi
   echo "AEGIS SFT DONE $rep $(date -Is)"
   for suite in "${SUITES[@]}"; do
     batch SL_ARM=aegiscbf SL_MEM_TAG=$rep SL_CBF_MEMORY=1 SL_EXPLORE=1 SL_SUITES=$suite
