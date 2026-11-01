@@ -214,6 +214,16 @@ def main() -> None:
     if args.policy == "official":
         server, port = start_openpi(out)
         stop = lambda: os.killpg(server.pid, 15)  # noqa: E731
+        # The first inference compiles the JAX model; done inside an episode, it can
+        # outlast the websocket keepalive and end that episode before its first step.
+        import numpy as np
+
+        M._websocket_client_policy.WebsocketClientPolicy("0.0.0.0", port).infer({
+            "observation/image": np.zeros((224, 224, 3), np.uint8),
+            "observation/wrist_image": np.zeros((224, 224, 3), np.uint8),
+            "observation/state": np.zeros(8, np.float32),
+            "prompt": "warm up",
+        })
     else:
         M._websocket_client_policy.WebsocketClientPolicy = RpentPolicy
         daemon, RpentPolicy.model = start_vla(out)

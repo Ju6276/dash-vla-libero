@@ -1,0 +1,3 @@
+runs/aegis/p2_official_900/results.jsonl {"n": 16, "errors": 0, "TSR": "15/16", "CAR": "12/16", "SSR": "12/16", "TSR_official": "14/16", "CAR_official": "14/16", "SSR_official": "12/16", "mean_steps": 256}
+runs/aegis/p2_900/results.jsonl {"n": 16, "errors": 0, "TSR": "15/16", "CAR": "15/16", "SSR": "14/16", "TSR_official": "13/16", "CAR_official": "15/16", "SSR_official": "12/16", "mean_steps": 331}
+runs/vla_only/p2_900/results.jsonl {"n": 16, "errors": 0, "TSR": "13/16", "CAR": "3/16", "SSR": "3/16", "TSR_official": "12/16", "CAR_official": "3/16", "SSR_official": "3/16", "mean_steps": 333}
