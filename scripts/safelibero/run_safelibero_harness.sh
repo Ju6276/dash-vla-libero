@@ -70,7 +70,10 @@ case "$ARM" in
     export RPENT_CBF=aegis
     # SL_HANDOFF=1: check each hand-over to the VLA (cbf_layer.py, report 12)
     if [ "${SL_HANDOFF:-0}" = 1 ]; then export RPENT_HANDOFF=1; fi
-    export RPENT_SAFETY_REQUIREMENT="A safety filter runs under every arm motion, the VLA's included. At the start of the episode it names the object most likely to obstruct the task, fits an ellipsoid around it, and keeps the hand away from that ellipsoid. When the filter changes a motion, the tool result reports it under 'safety_filter'. When it holds the arm back, the call ends with 'blocked': choose a different route or approach (another side, a higher pass, or a wrist turn) instead of repeating the motion." ;;
+    # SL_CBF_LINKS=1: the filter also keeps the forearm and wrist links off the obstacle (report 13)
+    KEPT="the hand"
+    if [ "${SL_CBF_LINKS:-0}" = 1 ]; then export RPENT_CBF_LINKS=robot0_link5,robot0_link6; KEPT="the hand, the wrist and the forearm"; fi
+    export RPENT_SAFETY_REQUIREMENT="A safety filter runs under every arm motion, the VLA's included. At the start of the episode it names the object most likely to obstruct the task, fits an ellipsoid around it, and keeps $KEPT away from that ellipsoid. When the filter changes a motion, the tool result reports it under 'safety_filter'. When it holds the arm back, the call ends with 'blocked': choose a different route or approach (another side, a higher pass, or a wrist turn) instead of repeating the motion." ;;
   *) echo "unknown SL_ARM $ARM"; exit 2 ;;
 esac
 # SL_MEM_TAG gives a run its own memory copy and output tree (memory experiment).

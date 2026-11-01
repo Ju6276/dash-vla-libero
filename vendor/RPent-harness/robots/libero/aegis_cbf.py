@@ -14,6 +14,15 @@ The CBF functions are copied from utils.py. The QP has a single linear
 constraint, so its solution is written in closed form instead of calling
 OSQP; it is the same minimiser.
 
+RPENT_CBF_LINKS (e.g. "robot0_link5,robot0_link6") adds one constraint per
+listed arm link: the link's collision mesh is enclosed in an ellipsoid (fitted
+once from the model), and the same h and coefficients are taken against the
+obstacle, each link with its own separating direction. The link's twist is
+mapped from the commanded end-effector twist through the arm Jacobians,
+J_link pinv(J_ee) (the controller's null-space motion is ignored). With more
+than one constraint the QP is solved exactly by enumerating active sets.
+Without the variable the filter is AEGIS's.
+
 For the harness's feedback (robots/libero/cbf_layer.py) the filter keeps the
 same per-call statistics and blocked rule as cbf_filter.DepthCbf. Marking and
 holding do nothing here: AEGIS protects one obstacle and nothing else.
@@ -113,6 +122,60 @@ def compute_h_coeffs_3d(p_i, Q_i_diag, R_i,
     return a_v, a_omega, a_uz, h, mu_row
 
 
+# ---- arm links (RPENT_CBF_LINKS) ---------------------------------------------
+
+def link_ellipsoid(model, body: str):
+    """Centre (body frame), rotation (body frame) and semi-axes of an ellipsoid around the body's collision meshes."""
+    import mujoco
+
+    index = model.body_name2id(body)
+    points = []
+    for g in range(model.ngeom):
+        if model.geom_bodyid[g] != index or model.geom_contype[g] == 0 and model.geom_conaffinity[g] == 0:
+            continue
+        mesh = model.geom_dataid[g]
+        if model.geom_type[g] != mujoco.mjtGeom.mjGEOM_MESH or mesh < 0:
+            continue
+        start, count = model.mesh_vertadr[mesh], model.mesh_vertnum[mesh]
+        rot = R.from_quat(np.roll(model.geom_quat[g], -1)).as_matrix()
+        points.append(np.asarray(model.geom_pos[g]) + np.asarray(model.mesh_vert[start:start + count]) @ rot.T)
+    points = np.vstack(points)
+    centre = points.mean(axis=0)
+    _, _, axes = np.linalg.svd(points - centre, full_matrices=False)
+    rot = axes.T
+    if np.linalg.det(rot) < 0:
+        rot[:, 2] *= -1
+    local = (points - centre) @ rot
+    half = np.maximum(np.abs(local).max(axis=0), 1e-3)
+    scale = float(np.sqrt(((local / half) ** 2).sum(axis=1).max()))  # smallest scaling that encloses every vertex
+    return centre, rot, half * scale
+
+
+def solve_qp(u_ref, W, A, b):
+    """min (u - u_ref)' W (u - u_ref) s.t. A u + b >= 0, W diagonal, few rows: exact by active sets."""
+    if np.all(A @ u_ref + b >= -1e-12):
+        return u_ref
+    Winv = 1.0 / W
+    best = None
+    rows = range(len(b))
+    for mask in range(1, 1 << len(b)):
+        S = [i for i in rows if mask >> i & 1]
+        AS = A[S]
+        lam = -np.linalg.pinv((AS * Winv) @ AS.T) @ (AS @ u_ref + b[S])
+        if np.any(lam < -1e-9):
+            continue
+        u = u_ref + Winv * (AS.T @ lam)
+        if np.any(A @ u + b < -1e-7):
+            continue
+        cost = float(((u - u_ref) ** 2 * W).sum())
+        if best is None or cost < best[0]:
+            best = (cost, u)
+    if best is None:  # no feasible active set (conflicting rows): least-squares on all of them
+        lam = -np.linalg.pinv((A * Winv) @ A.T) @ (A @ u_ref + b)
+        return u_ref + Winv * (A.T @ np.maximum(lam, 0))
+    return best[1]
+
+
 # ---- filter ----------------------------------------------------------------
 
 class AegisCbf:
@@ -124,6 +187,12 @@ class AegisCbf:
 
     def bind(self, sim) -> None:
         self._sim = sim
+        names = [n for n in os.environ.get("RPENT_CBF_LINKS", "").split(",") if n]
+        model = sim.model
+        self.links = {n: link_ellipsoid(model, n) for n in names}
+        if self.links:
+            arm = [model.joint_name2id(f"robot0_joint{i}") for i in range(1, 8)]
+            self._dofs = [int(model.jnt_dofadr[j]) for j in arm]
 
     def reset_episode(self) -> None:
         self.obs = None
@@ -164,6 +233,28 @@ class AegisCbf:
     def _eef(self):
         R1 = R.from_quat(self.obs["robot0_eef_quat"]).as_matrix()
         return np.asarray(self.obs["robot0_eef_pos"], float) + R1 @ EEF_OFFSET, R1
+
+    def _link_pose(self, name: str):
+        centre, rot, _ = self.links[name]
+        data = self._sim.data
+        xmat = np.asarray(data.get_body_xmat(name), float)
+        return np.asarray(data.get_body_xpos(name), float) + xmat @ centre, xmat @ rot
+
+    def _link_map(self, name: str, p1: np.ndarray) -> np.ndarray:
+        """6x6 map from the end-effector twist at p1 (world) to the link ellipsoid's twist at its centre (world)."""
+        data = self._sim.data
+        d = self._dofs
+
+        def jac(body, point):
+            jp = np.asarray(data.get_body_jacp(body), float).reshape(3, -1)[:, d]
+            jr = np.asarray(data.get_body_jacr(body), float).reshape(3, -1)[:, d]
+            r = point - np.asarray(data.get_body_xpos(body), float)
+            return np.vstack([jp - vector_hat(r) @ jr, jr])
+
+        pL, _ = self._link_pose(name)
+        J_ee = jac("robot0_right_hand", p1)
+        J_link = jac(name, pL)
+        return J_link @ np.linalg.pinv(J_ee, rcond=1e-3)
 
     def perceive(self, raw: dict, language: str, suite: str, work: Path) -> dict:
         """Name, detect and fit the obstacle once, as main_aegis.py does after its wait steps."""
@@ -212,6 +303,10 @@ class AegisCbf:
             else:
                 self.Q1 = np.array([0.06, 0.12, 0.11])
             self.z = (self.p2 - p1) / np.linalg.norm(self.p2 - p1)
+            self.z_links = {}
+            for name in self.links:
+                pL, _ = self._link_pose(name)
+                self.z_links[name] = (self.p2 - pL) / np.linalg.norm(self.p2 - pL)
         return result
 
     def filter(self, action: np.ndarray) -> np.ndarray:
@@ -228,7 +323,36 @@ class AegisCbf:
         a = np.hstack([0.2 * a_v, 0.2 * a_omega, a_uz])
         # min (u - u_ref)' W (u - u_ref)  s.t.  a.u + 10 h >= 0
         slack = float(a @ u_ref + 10 * h)
-        u = u_ref if slack >= 0 else u_ref - slack / float(a @ (a / W_DIAG)) * (a / W_DIAG)
+        h_links = {}
+        if not self.links:
+            u = u_ref if slack >= 0 else u_ref - slack / float(a @ (a / W_DIAG)) * (a / W_DIAG)
+        else:
+            # u = [u_v, u_omega, u_z, u_z of each link]; the commanded world twist is (0.2 R1 u_v, 0.2 u_omega)
+            n = len(self.links)
+            rows, b = [np.hstack([a, np.zeros(3 * n)])], [10 * h]
+            refs = [u_ref]
+            for k, name in enumerate(self.links):
+                pL, RL = self._link_pose(name)
+                QL = self.links[name][2]
+                lv, lw, luz, hL, muL = compute_h_coeffs_3d(pL, QL, RL, self.p2, self.Q2, self.R2, self.z_links[name])
+                # lv, lw act on the link's body-frame twist; to world, then through the Jacobian map
+                g = np.hstack([lv @ RL.T, lw @ RL.T]) @ self._link_map(name, p1)
+                row = np.zeros(9 + 3 * n)
+                row[:3] = 0.2 * g[:3] @ R1
+                row[3:6] = 0.2 * g[3:]
+                row[9 + 3 * k:12 + 3 * k] = luz
+                rows.append(row)
+                b.append(10 * hL)
+                refs.append(10 * muL)
+                h_links[name] = float(hL)
+            A, b = np.vstack(rows), np.asarray(b)
+            W = np.hstack([W_DIAG, np.ones(3 * n)])
+            u_full = solve_qp(np.hstack(refs).astype(float), W, A, b)
+            slack = min(slack, float(np.min(A @ np.hstack(refs) + b)))
+            for k, name in enumerate(self.links):
+                zL = self.z_links[name] + project_matrix(self.z_links[name]) @ u_full[9 + 3 * k:12 + 3 * k] * DT
+                self.z_links[name] = zL / np.linalg.norm(zL)
+            u = u_full[:9]
         u_v, u_omega, u_z = u[:3], u[3:6], u[6:]
         dz = project_matrix(self.z) @ u_z
         self.z = self.z + dz * DT
@@ -239,7 +363,7 @@ class AegisCbf:
         out[6] = action[6]
 
         intervened = slack < 0
-        self.last = {"h": float(h), "intervened": bool(intervened)}
+        self.last = {"h": float(h), "intervened": bool(intervened), "h_links": h_links}
         correction = float(np.linalg.norm(out[:3] - action[:3])) * self.scale
         grip = np.asarray(self.obs["robot0_eef_pos"], float)
         self._window.append((grip, float(np.linalg.norm(action[:3])) * self.scale, intervened))
@@ -270,7 +394,7 @@ class AegisCbf:
         return moved < BLOCK_PROGRESS * nominal and intervened >= BLOCK_INTERVENED
 
     def step_record(self, step: int, robot_contacts: list[str]) -> list:
-        """One line of the per-step log: [step, h, intervened, level, body, robot geoms touching the obstacle].
+        """One line of the per-step log: [step, h, intervened, level, body, robot geoms touching the obstacle(, lowest link h)].
 
         h and intervened are the filter's at this step (None before perception).
         level is min over robot and gripper body origins of |diag(1/Q2) R2' (x - p2)|,
@@ -292,7 +416,10 @@ class AegisCbf:
                 if best is None or value < best[0]:
                     best = (value, name)
             level, body = round(best[0], 3), best[1]
-        return [step, h, intervened, level, body, robot_contacts]
+        record = [step, h, intervened, level, body, robot_contacts]
+        if self.links and self.last is not None and self.last["h_links"]:
+            record.append(round(min(self.last["h_links"].values()), 4))  # lowest link h (RPENT_CBF_LINKS)
+        return record
 
     def close(self) -> None:
         pass
