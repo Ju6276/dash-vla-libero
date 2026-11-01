@@ -21,6 +21,7 @@
 | `08_aegis_cbf_harness.md` | 第二轮：AEGIS 原版 CBF + 规划器 + 反馈 + 记忆（H、H+M） |
 | `09_step_budget.md` | 各论文的步数口径；A、AEGIS 在 900 步下重跑；官方 π0.5 对比 SFT 版 |
 | `10_memory_ablation.md` | 记忆消融：H+E（只有探索笔记） |
+| `11_cbf_signal.md` | 离线分析：过滤器干预不能提前预示碰撞，抓取起点的几何关系可以 |
 
 每组的逐回合数据：`data/p2/`（B0、B1、B2），`data/cbf/`（第一、二轮和消融，以及 A、AEGIS 的 900 步结果）。
 
