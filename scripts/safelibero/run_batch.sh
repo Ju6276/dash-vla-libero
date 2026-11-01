@@ -9,6 +9,7 @@
 #   SL_EXPLORE_SEED=0
 #   SL_MEM_TAG=x               separate memory copy and output tree (memory experiment)
 #   SL_EXPLORE=0               evaluate on the published memory without exploring
+#   SL_VARIANT=name            a new instruction in the scene (report 14); SL_TASKS must be 0
 # A finished run leaves .done and is skipped on rerun. A run that fails moves
 # (with its audit trace and unmerged memory inbox) to runs/_invalid_quota/ and
 # the batch stops with exit 75 when Codex reports a usage limit or overload;
@@ -63,7 +64,7 @@ budget_check() {
   echo "BUDGET weekly_used=${used}%"
 }
 cell_dir() {  # root mode suite task seed
-  echo "$1/${ARM}${TAG:+_$TAG}/$2/${3/safelibero_/scene_}_t$4_s$5"
+  echo "$1/${ARM}${TAG:+_$TAG}/$2/${3/safelibero_/scene_}_t$4_s$5${SL_VARIANT:+_$SL_VARIANT}"
 }
 discard() {  # out audit reason: move a run that does not count out of the way
   local out=$1 audit=$2 reason=$3 stamp name inbox

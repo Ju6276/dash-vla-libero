@@ -19,7 +19,10 @@ listed arm link: the link's collision mesh is enclosed in an ellipsoid (fitted
 once from the model), and the same h and coefficients are taken against the
 obstacle, each link with its own separating direction. The link's twist is
 mapped from the commanded end-effector twist through the arm Jacobians,
-J_link pinv(J_ee) (the controller's null-space motion is ignored). With more
+J_link M^-1 J_ee' (J_ee M^-1 J_ee')^-1, the dynamically consistent inverse
+the OSC itself uses (the controller's null-space posture term is ignored), with the
+commanded rotation in the controller's own units (output_max for position and
+orientation differ by 10). With more
 than one constraint the QP is solved exactly by enumerating active sets.
 Without the variable the filter is AEGIS's.
 
@@ -124,8 +127,22 @@ def compute_h_coeffs_3d(p_i, Q_i_diag, R_i,
 
 # ---- arm links (RPENT_CBF_LINKS) ---------------------------------------------
 
-def link_ellipsoid(model, body: str):
-    """Centre (body frame), rotation (body frame) and semi-axes of an ellipsoid around the body's collision meshes."""
+def enclosing_ellipsoid(points: np.ndarray):
+    """Centre, rotation and semi-axes of the principal-axis ellipsoid scaled to just enclose the points."""
+    centre = points.mean(axis=0)
+    _, _, axes = np.linalg.svd(points - centre, full_matrices=False)
+    rot = axes.T
+    if np.linalg.det(rot) < 0:
+        rot[:, 2] *= -1
+    local = (points - centre) @ rot
+    half = np.maximum(np.abs(local).max(axis=0), 1e-3)
+    scale = float(np.sqrt(((local / half) ** 2).sum(axis=1).max()))  # smallest scaling that encloses every vertex
+    return centre, rot, half * scale
+
+
+def link_ellipsoids(model, body: str, parts: int = 1):
+    """Ellipsoids (body frame) around the body's collision meshes; parts > 1 cuts the mesh
+    into that many equal slices along its long axis, one ellipsoid each."""
     import mujoco
 
     index = model.body_name2id(body)
@@ -140,15 +157,12 @@ def link_ellipsoid(model, body: str):
         rot = R.from_quat(np.roll(model.geom_quat[g], -1)).as_matrix()
         points.append(np.asarray(model.geom_pos[g]) + np.asarray(model.mesh_vert[start:start + count]) @ rot.T)
     points = np.vstack(points)
-    centre = points.mean(axis=0)
-    _, _, axes = np.linalg.svd(points - centre, full_matrices=False)
-    rot = axes.T
-    if np.linalg.det(rot) < 0:
-        rot[:, 2] *= -1
-    local = (points - centre) @ rot
-    half = np.maximum(np.abs(local).max(axis=0), 1e-3)
-    scale = float(np.sqrt(((local / half) ** 2).sum(axis=1).max()))  # smallest scaling that encloses every vertex
-    return centre, rot, half * scale
+    if parts == 1:
+        return [enclosing_ellipsoid(points)]
+    centre, rot, _ = enclosing_ellipsoid(points)
+    along = (points - centre) @ rot[:, 0]
+    order = np.argsort(along)
+    return [enclosing_ellipsoid(points[chunk]) for chunk in np.array_split(order, parts)]
 
 
 def solve_qp(u_ref, W, A, b):
@@ -179,17 +193,26 @@ def solve_qp(u_ref, W, A, b):
 # ---- filter ----------------------------------------------------------------
 
 class AegisCbf:
-    def __init__(self, sim, output_max: float) -> None:
+    def __init__(self, sim, output_max: float, ori_output_max: float = 0.5) -> None:
         self.scale = float(output_max)
+        # The OSC scales a unit action to output_max metres or ori_output_max radians per step.
+        # AEGIS's hand row treats both alike; the link rows weight rotation by the ratio,
+        # since turning the wrist sweeps the forearm much further than it moves the hand.
+        self.ori_ratio = float(ori_output_max) / float(output_max)
         self.held = None
         self.bind(sim)
         self.reset_episode()
 
     def bind(self, sim) -> None:
         self._sim = sim
-        names = [n for n in os.environ.get("RPENT_CBF_LINKS", "").split(",") if n]
+        # "robot0_link5:2,robot0_link6": body[:slices]; each slice is one ellipsoid and one constraint
         model = sim.model
-        self.links = {n: link_ellipsoid(model, n) for n in names}
+        self.links = {}
+        for entry in filter(None, os.environ.get("RPENT_CBF_LINKS", "").split(",")):
+            body, _, parts = entry.partition(":")
+            shapes = link_ellipsoids(model, body, int(parts or 1))
+            for i, (centre, rot, half) in enumerate(shapes):
+                self.links[body if len(shapes) == 1 else f"{body}#{i}"] = (body, centre, rot, half)
         if self.links:
             arm = [model.joint_name2id(f"robot0_joint{i}") for i in range(1, 8)]
             self._dofs = [int(model.jnt_dofadr[j]) for j in arm]
@@ -235,10 +258,10 @@ class AegisCbf:
         return np.asarray(self.obs["robot0_eef_pos"], float) + R1 @ EEF_OFFSET, R1
 
     def _link_pose(self, name: str):
-        centre, rot, _ = self.links[name]
+        body, centre, rot, _ = self.links[name]
         data = self._sim.data
-        xmat = np.asarray(data.get_body_xmat(name), float)
-        return np.asarray(data.get_body_xpos(name), float) + xmat @ centre, xmat @ rot
+        xmat = np.asarray(data.get_body_xmat(body), float)
+        return np.asarray(data.get_body_xpos(body), float) + xmat @ centre, xmat @ rot
 
     def _link_map(self, name: str, p1: np.ndarray) -> np.ndarray:
         """6x6 map from the end-effector twist at p1 (world) to the link ellipsoid's twist at its centre (world)."""
@@ -253,8 +276,18 @@ class AegisCbf:
 
         pL, _ = self._link_pose(name)
         J_ee = jac("robot0_right_hand", p1)
-        J_link = jac(name, pL)
-        return J_link @ np.linalg.pinv(J_ee, rcond=1e-3)
+        J_link = jac(self.links[name][0], pL)
+        if os.environ.get("RPENT_CBF_LINK_MAP") == "pinv":
+            return J_link @ np.linalg.pinv(J_ee, rcond=1e-3)
+        # The OSC moves the joints along the dynamically consistent inverse M^-1 J' (J M^-1 J')^-1.
+        import mujoco
+
+        model, raw = self._sim.model._model, self._sim.data._data
+        full = np.zeros((model.nv, model.nv))
+        mujoco.mj_fullM(model, full, raw.qM)
+        M_inv = np.linalg.inv(full[np.ix_(d, d)])
+        lam = np.linalg.pinv(J_ee @ M_inv @ J_ee.T, rcond=1e-3)
+        return J_link @ M_inv @ J_ee.T @ lam
 
     def perceive(self, raw: dict, language: str, suite: str, work: Path) -> dict:
         """Name, detect and fit the obstacle once, as main_aegis.py does after its wait steps."""
@@ -333,13 +366,13 @@ class AegisCbf:
             refs = [u_ref]
             for k, name in enumerate(self.links):
                 pL, RL = self._link_pose(name)
-                QL = self.links[name][2]
+                QL = self.links[name][3]
                 lv, lw, luz, hL, muL = compute_h_coeffs_3d(pL, QL, RL, self.p2, self.Q2, self.R2, self.z_links[name])
                 # lv, lw act on the link's body-frame twist; to world, then through the Jacobian map
                 g = np.hstack([lv @ RL.T, lw @ RL.T]) @ self._link_map(name, p1)
                 row = np.zeros(9 + 3 * n)
                 row[:3] = 0.2 * g[:3] @ R1
-                row[3:6] = 0.2 * g[3:]
+                row[3:6] = 0.2 * self.ori_ratio * g[3:]
                 row[9 + 3 * k:12 + 3 * k] = luz
                 rows.append(row)
                 b.append(10 * hL)
@@ -347,6 +380,9 @@ class AegisCbf:
                 h_links[name] = float(hL)
             A, b = np.vstack(rows), np.asarray(b)
             W = np.hstack([W_DIAG, np.ones(3 * n)])
+            # Turning the wrist is a cheap fix on paper for a link row (rotation is weighted by ori_ratio),
+            # but the OSC tracks it loosely; RPENT_CBF_LINK_ROT_WEIGHT makes the QP correct by translation instead.
+            W[3:6] *= float(os.environ.get("RPENT_CBF_LINK_ROT_WEIGHT", "25"))
             u_full = solve_qp(np.hstack(refs).astype(float), W, A, b)
             slack = min(slack, float(np.min(A @ np.hstack(refs) + b)))
             for k, name in enumerate(self.links):

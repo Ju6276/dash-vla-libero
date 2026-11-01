@@ -70,6 +70,19 @@ def split_suite(suite_name: str) -> tuple[str, str]:
     return base, level
 
 
+def task_variant(base: str, task_id: int) -> dict | None:
+    """RPENT_SAFETY_TASK_VARIANT=variants.json:name (scripts/safelibero/make_new_instructions.py):
+    the scene's task with a new instruction and goal. Objects, obstacles and inits stay the task's."""
+    spec = os.environ.get("RPENT_SAFETY_TASK_VARIANT")
+    if not spec:
+        return None
+    path, name = spec.rsplit(":", 1)
+    variant = json.loads(Path(path).read_text())[name]
+    if variant["scene"] != base or int(variant["task"]) != int(task_id):
+        raise ValueError(f"variant {name} is for {variant['scene']} task {variant['task']}, not {base} task {task_id}")
+    return {"name": name, **variant}
+
+
 def safelibero_task_identity(suite_name: str, task_id: int) -> dict[str, str | int]:
     """Suite, level, task name and language, looked up in a child interpreter."""
     base, level = split_suite(suite_name)
@@ -112,6 +125,9 @@ print(json.dumps({"task_name": task.name, "language": task.language}))
         detail = (completed.stderr or completed.stdout).strip()
         raise RuntimeError(f"SafeLIBERO identity failed for {suite_name} task {task_id}: {detail}")
     data = json.loads(payload)
+    variant = task_variant(base, task_id)
+    if variant:
+        data = {"task_name": variant["name"], "language": variant["language"]}
     return {
         "suite": canonical_suite(suite_name),
         "flat_task_id": int(task_id),
@@ -149,7 +165,10 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
                 f"task_id must be in [0, {suite.n_tasks}) for suite {suite_name!r}; got {task_id}"
             )
         task = suite.get_task(task_id)
-        bddl = Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
+        variant = task_variant(base, task_id)
+        if variant:
+            task = task._replace(name=variant["name"], language=variant["language"], bddl_file=variant["bddl"])
+        bddl = Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file  # absolute for a variant
         init_path = (
             Path(get_libero_path("init_states"))
             / task.problem_folder
@@ -199,7 +218,7 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
         elif os.environ.get("RPENT_CBF") == "aegis":
             from robots.libero.aegis_cbf import AegisCbf
 
-            self.cbf = AegisCbf(self._mujoco_sim(), float(arm["output_max"][0]))
+            self.cbf = AegisCbf(self._mujoco_sim(), float(arm["output_max"][0]), float(arm["output_max"][3]))
         self.obstacle_name: str | None = None
         self.obstacle_start = None
         self.collided = False
