@@ -10,7 +10,13 @@ from every object the planner has not marked. This layer
     so the planner can choose another route instead of pushing on;
   - adds the filter's interventions to every tool result;
   - logs every stepping call with the filter's record to RPENT_CBF_LOG for the
-    memory step (process and episode identify the attempt).
+    memory step (process and episode identify the attempt);
+  - with RPENT_HANDOFF=1 (AEGIS filter), checks each hand-over to the VLA: a
+    pi0_pick that would start closer than HANDOFF_XY (horizontally) to the
+    obstacle ellipsoid's centre is refused once, with a start point farther
+    away; called again from the same pose, it runs. All collisions of the
+    harness arms so far happened inside pi0_pick, which started closer to the
+    obstacle than the clean picks did (report 11).
 """
 
 from __future__ import annotations
@@ -31,6 +37,9 @@ STEPPING_TOOLS = MOTION_TOOLS + VLA_TOOLS + ("release", "set_gripper", "execute_
 HOLDING_OPENING = 0.003  # m; a closed gripper wider than this holds something (as in B2)
 HOLDING_MAX = 0.06
 HOLD_RADIUS = 0.06       # m; the held object is the marked target this close to the gripper
+HANDOFF_XY = 0.15        # m; a VLA start this close (horizontally) to the obstacle centre is refused once
+HANDOFF_SUGGEST = 0.18   # m; the suggested start lies this far from it, on the gripper's side
+HANDOFF_SAME = 0.02      # m; a VLA call again within this of the refused pose runs
 
 
 class CbfBlocked(Exception):
@@ -50,6 +59,8 @@ class CbfLayer:
         # RPENT_CBF=aegis: AEGIS's filter (aegis_cbf.py) keeps the hand off one
         # obstacle named at reset; there is nothing to mark.
         self.marking = os.environ.get("RPENT_CBF") == "1"
+        self.handoff = os.environ.get("RPENT_CBF") == "aegis" and os.environ.get("RPENT_HANDOFF") == "1"
+        self._refused_at = None
         primitives._step_monitor = self._check
         primitives._chunk_monitor = lambda actions: self._check()
 
@@ -60,6 +71,7 @@ class CbfLayer:
         """Episode reset: the env forgets its marks, so does the layer."""
         self.marks.clear()
         self.held = None
+        self._refused_at = None
 
     def _check(self) -> None:
         if self._call("env.cbf_stats", False).get("blocked_now"):
@@ -74,6 +86,10 @@ class CbfLayer:
         def gated(**kwargs: Any) -> ToolResult:
             primitives = self.primitives
             start = np.asarray(primitives._last_obs_eef_pos, float).copy()
+            if self.handoff and name in VLA_TOOLS:
+                refused = self._handoff_check(name, start, kwargs)
+                if refused is not None:
+                    return refused
             self._call("env.cbf_stats", True)
             blocked = False
             try:
@@ -130,6 +146,47 @@ class CbfLayer:
             return result
 
         return gated
+
+    def _handoff_check(self, name: str, eef: np.ndarray, kwargs: dict) -> ToolResult | None:
+        """Refuse once a VLA call that starts too close to the obstacle; None lets it run."""
+        obstacle = self._call("env.cbf_obstacle")
+        if not obstacle.get("active"):
+            return None
+        centre = np.asarray(obstacle["p2"], float)
+        offset = eef[:2] - centre[:2]
+        distance = float(np.linalg.norm(offset))
+        insisted = self._refused_at is not None and float(np.linalg.norm(eef - self._refused_at)) < HANDOFF_SAME
+        refuse = distance < HANDOFF_XY and not insisted
+        self._refused_at = eef.copy() if refuse else None
+        record = {"pid": os.getpid(), "episode": self.primitives._episode, "tool": name,
+                  "prompt": kwargs.get("prompt"), "eef": _r(eef), "obstacle_centre": _r(centre),
+                  "distance_xy": round(distance, 4), "refused": refuse, "insisted": insisted}
+        if self._log:
+            with open(self._log + ".handoff.jsonl", "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, default=str) + "\n")
+        if not refuse:
+            return None
+        direction = offset / distance if distance > 1e-6 else np.array([-1.0, 0.0])
+        suggested = np.array([*(centre[:2] + HANDOFF_SUGGEST * direction), eef[2]])
+        return ToolResult(
+            data={
+                "name": name,
+                "handoff_refused": True,
+                "reason": (
+                    f"the VLA would start {distance:.3f} m (horizontally) from the centre of the obstacle "
+                    f"ellipsoid at {_r(centre)}; grasps handed to the VLA this close to the obstacle tend to hit it"
+                ),
+                "eef_pos": _r(eef),
+                "suggested_start": _r(suggested),
+                "terminated": self.primitives.env.terminated,
+                "truncated": self.primitives.env.truncated,
+                "next": (
+                    "Move to a start pose farther from the obstacle, on the side of the target away from it "
+                    "(for example suggested_start), then call the VLA again. If the target can only be "
+                    "reached from here, call the VLA again without moving and it will run."
+                ),
+            }
+        )
 
     def _update_held(self, name: str, kwargs: dict) -> None:
         opening = float(self.primitives._last_obs_gripper)

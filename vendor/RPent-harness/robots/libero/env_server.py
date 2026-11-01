@@ -197,6 +197,7 @@ class LiberoEnvFacade(BaseEnvFacade):
             methods["env.cbf_unmark"] = self.cbf_unmark
             methods["env.cbf_hold"] = self.cbf_hold
             methods["env.cbf_stats"] = self.cbf_stats
+            methods["env.cbf_obstacle"] = self.cbf_obstacle
         self._rpc.update(methods)
         self._readonly_methods.add("env.get_task_language")
 
@@ -294,6 +295,13 @@ class LiberoEnvFacade(BaseEnvFacade):
         if reset:
             cbf.reset_stats()
         return to_numpy_tree(stats)
+
+    def cbf_obstacle(self) -> dict:
+        """The obstacle ellipsoid the filter fitted at reset (AEGIS filter only)."""
+        cbf = self._env.cbf
+        if not getattr(cbf, "active", False) or not hasattr(cbf, "p2"):
+            return {"active": False}
+        return to_numpy_tree({"active": True, "p2": cbf.p2, "Q2": cbf.Q2, "R2": cbf.R2})
 
     def scene_snapshot(self) -> dict:
         return self._env.scene_snapshot()
