@@ -183,6 +183,7 @@ def main() -> None:
     parser.add_argument("--episodes", type=int, nargs="+", default=[1, 2])
     parser.add_argument("--policy", choices=("sft", "official"), default="sft")
     parser.add_argument("--max-steps", type=int, default=None, help="one budget for every suite (default: AEGIS's 300 / 550)")
+    parser.add_argument("--variants", type=Path, help="variants.json from make_new_instructions.py; --cells then also takes variant_name@level")
     args = parser.parse_args()
     out = args.output_dir.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -191,7 +192,8 @@ def main() -> None:
     if results.exists():
         for line in results.read_text().splitlines():
             row = json.loads(line)
-            done.add((row["suite"], row["task"], row["episode"]))
+            done.add((row.get("variant") or row["suite"], row["task"], row["episode"]))
+    variants = json.loads(args.variants.read_text()) if args.variants else {}
 
     # The original loads GroundingDINO from ./GroundingDINO relative to its cwd.
     work = out / "work"
@@ -210,6 +212,12 @@ def main() -> None:
     M = load_main_aegis(args.max_steps)
 
     M.obstacle_detection = codex_obstacle_detection
+    # A variant runs a task-0 scene (its objects, obstacles and inits) with a new
+    # instruction and goal: the episode's task gets the variant's language and bddl.
+    original_env = M._get_libero_env
+    variant = {}
+    M._get_libero_env = lambda task, *rest: original_env(
+        task._replace(language=variant["language"], bddl_file=variant["bddl"]) if variant else task, *rest)
     port = 8000
     if args.policy == "official":
         server, port = start_openpi(out)
@@ -233,10 +241,18 @@ def main() -> None:
     logging.getLogger().setLevel(logging.INFO)
     try:
         for cell in args.cells:
-            suite, task = cell.split(":")
+            variant.clear()
+            key = None
+            if "@" in cell:
+                key = cell
+                name, level = cell.split("@")
+                variant.update(variants[name])
+                suite, task = f"{variant['scene']}_{level}", str(variant["task"])
+            else:
+                suite, task = cell.split(":")
             base, level = suite.rsplit("_", 1)
             for episode in args.episodes:
-                if (suite, int(task), episode) in done:
+                if (key or suite, int(task), episode) in done:
                     continue
                 capture.lines.clear()
                 printed = io.StringIO()
@@ -258,6 +274,7 @@ def main() -> None:
                 steps = grab(r"Time steps: \[(\d+)\]")
                 row = {
                     "suite": suite, "task": int(task), "episode": episode,
+                    **({"variant": key, "language": variant["language"]} if key else {}),
                     "policy": args.policy, "max_steps": args.max_steps,
                     "obstacle_named": grab(r"obstacle_detection \(codex\): (.+) \("),
                     "success": grab(r"Success: (True|False)") == "True",
