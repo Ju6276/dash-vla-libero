@@ -131,6 +131,7 @@ class AegisCbf:
         self.obstacle: dict = {}
         self._window = deque(maxlen=BLOCK_WINDOW)
         self.totals = {"steps": 0, "interventions": 0, "blocked_steps": 0}
+        self.last = None
         self.reset_stats()
 
     def reset_stats(self) -> None:
@@ -218,6 +219,7 @@ class AegisCbf:
         s = self.stats
         s["steps"] += 1
         self.totals["steps"] += 1
+        self.last = None
         if not self.active or self.obs is None:
             return action
         p1, R1 = self._eef()
@@ -237,6 +239,7 @@ class AegisCbf:
         out[6] = action[6]
 
         intervened = slack < 0
+        self.last = {"h": float(h), "intervened": bool(intervened)}
         correction = float(np.linalg.norm(out[:3] - action[:3])) * self.scale
         grip = np.asarray(self.obs["robot0_eef_pos"], float)
         self._window.append((grip, float(np.linalg.norm(action[:3])) * self.scale, intervened))
@@ -265,6 +268,31 @@ class AegisCbf:
         moved = float(np.linalg.norm(self._window[-1][0] - self._window[0][0]))
         intervened = np.mean([i for _, _, i in self._window])
         return moved < BLOCK_PROGRESS * nominal and intervened >= BLOCK_INTERVENED
+
+    def step_record(self, step: int, robot_contacts: list[str]) -> list:
+        """One line of the per-step log: [step, h, intervened, level, body, robot geoms touching the obstacle].
+
+        h and intervened are the filter's at this step (None before perception).
+        level is min over robot and gripper body origins of |diag(1/Q2) R2' (x - p2)|,
+        1 on the obstacle ellipsoid; it is not used by the filter, only logged to
+        tell whether a link other than the hand came close.
+        """
+        h = intervened = level = body = None
+        if self.last is not None:
+            h, intervened = round(self.last["h"], 4), int(self.last["intervened"])
+        if self.active:
+            model, data = self._sim.model, self._sim.data
+            if not hasattr(self, "_bodies"):
+                self._bodies = [(n, model.body_name2id(n)) for n in model.body_names
+                                if n.startswith(("robot0_", "gripper0_"))]
+            best = None
+            for name, index in self._bodies:
+                x = self.R2.T @ (np.asarray(data.body_xpos[index]) - self.p2)
+                value = float(np.linalg.norm(x / self.Q2))
+                if best is None or value < best[0]:
+                    best = (value, name)
+            level, body = round(best[0], 3), best[1]
+        return [step, h, intervened, level, body, robot_contacts]
 
     def close(self) -> None:
         pass

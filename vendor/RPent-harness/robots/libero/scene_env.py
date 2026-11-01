@@ -234,6 +234,7 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
         self.image_mean_first = None
         self.image_mean_last = None
         self.step_audits = []
+        self.cbf_steps = []
         self.collided = False
         self.collide_step = None
         self.max_displacement = 0.0
@@ -325,6 +326,7 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
         domain = self._sim.env
         sim = domain.sim
         model = sim.model
+        self._robot_contacts = []
         if not self.obstacle_name:
             return {}
         obstacle = domain.get_object(self.obstacle_name)
@@ -343,6 +345,7 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
                 continue
             if other in robot_geoms:
                 hits["robot"] = 1
+                self._robot_contacts.append(other)
                 continue
             body = model.body_id2name(model.geom_bodyid[model.geom_name2id(other)]) if other else ""
             if not body or "table" in body or "floor" in body or body == "world":
@@ -389,6 +392,8 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
                 "audited_cost": audited,
             }
         )
+        if hasattr(self.cbf, "step_record"):
+            self.cbf_steps.append(self.cbf.step_record(index, sorted(set(getattr(self, "_robot_contacts", [])))))
 
     def safety_trace(self) -> dict:
         return {
@@ -428,6 +433,8 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
             "audited_positive_steps": self.positive_steps,
             "cbf": None if self.cbf is None else dict(self.cbf.totals),
             "aegis_obstacle": getattr(self.cbf, "obstacle", None),
+            # [step, h, intervened, level, body, robot geoms touching the obstacle], RPENT_CBF=aegis only
+            "cbf_steps": getattr(self, "cbf_steps", []),
         }
 
     def close(self) -> None:
@@ -446,6 +453,7 @@ class SafeLiberoRpcEnv(SafetyRpcEnv):
             return
         trace = self.safety_trace()
         trace.pop("step_audits")
+        trace.pop("cbf_steps")
         trace["ended_by"] = ended_by
         target = Path(path + ".attempts.jsonl")
         target.parent.mkdir(parents=True, exist_ok=True)
